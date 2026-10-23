@@ -1,0 +1,1219 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>[hidden]{display:none!important} body{margin:0}</style>
+<title>Loja em Realidade Mista</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap">
+<style>
+/* Layout: viewport 3D em tela cheia; painel de ferramentas à esquerda e ficha do objeto à direita, como uma prancheta de obra. */
+:root {
+  --bg: #0f1720;
+  --panel: #141e29;
+  --panel-2: #1a2633;
+  --line: #2a3a4c;
+  --fg: #dfe7ee;
+  --muted: #8ba0b3;
+  --accent: #f2a93b;
+  --accent-ink: #1b1306;
+  --ok: #5cc98a;
+  --font-ui: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 14px; overflow: hidden; }
+#app { position: relative; height: 100%; }
+#view { position: absolute; inset: 0; }
+#view canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+.panel { position: absolute; background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 6px; backdrop-filter: blur(6px); }
+#tools { top: 12px; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 12px; width: 268px; display: flex; flex-direction: column; overflow: hidden; }
+#tools header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+#tools h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: 0.01em; }
+#tools h1 span { color: var(--accent); }
+.scroll { overflow-y: auto; padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 14px; }
+h2 { margin: 10px 0 6px; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+button { font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; cursor: pointer; text-align: left; line-height: 1.15; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; text-align: center; }
+button:disabled { color: var(--muted); cursor: not-allowed; border-style: dashed; }
+button.primary:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--line); cursor: not-allowed; }
+button.wide { width: 100%; text-align: center; }
+button small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; }
+.row > button { flex: 1 1 auto; text-align: center; }
+.note { color: var(--muted); font-size: 12.5px; line-height: 1.4; margin: 6px 0 0; }
+.dims { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+label.f { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+input[type=number] { font-family: var(--font-data); font-size: 13px; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; font-variant-numeric: tabular-nums; }
+.pill { font-family: var(--font-data); font-size: 11px; padding: 2px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.pill.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+
+#props { top: 12px; right: max(12px, env(safe-area-inset-right, 0px)); width: 250px; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+#props h3 { margin: 0; font-size: 17px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#props .params { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+#props .meta { font-family: var(--font-data); font-size: 11.5px; color: var(--muted); }
+
+#hud { position: absolute; left: 50%; bottom: max(14px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
+#keys { font-family: var(--font-data); font-size: 11.5px; color: var(--muted); background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--line); border-radius: 4px; padding: 5px 10px; white-space: nowrap; }
+#keys b { color: var(--fg); font-weight: 500; }
+#toast { font-size: 13.5px; background: var(--accent); color: var(--accent-ink); border-radius: 4px; padding: 6px 12px; font-weight: 500; opacity: 0; transition: opacity .2s; }
+#toast.show { opacity: 1; }
+#menuToggle { display: none; }
+textarea { width: 100%; box-sizing: border-box; min-height: 70px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font-family: var(--font-data); font-size: 11px; }
+
+@media (max-width: 760px) {
+  #tools { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-height: 52%; border-radius: 10px 10px 0 0; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+  #tools.collapsed .scroll { display: none; }
+  #menuToggle { display: inline-block; padding: 4px 10px; }
+  #props { top: 8px; left: max(8px, env(safe-area-inset-left, 0px)); right: max(8px, env(safe-area-inset-right, 0px)); width: auto; }
+  #keys { display: none; }
+  #hud { bottom: auto; top: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+
+</head>
+<body>
+<div id="app">
+  <div id="view"></div>
+
+  <aside id="tools" class="panel">
+    <header>
+      <h1>Loja <span>RM</span></h1>
+      <button id="menuToggle" aria-expanded="true">Menu</button>
+    </header>
+    <div class="scroll">
+      <section>
+        <h2>Meta Quest 3</h2>
+        <button id="btnAR" class="primary wide" disabled>Entrar em realidade mista</button>
+        <div class="row" style="margin-top:6px"><button id="btnVR" disabled>Entrar em VR</button></div>
+        <p class="note" id="xrStatus">Verificando suporte a WebXR…</p>
+      </section>
+
+      <section id="catalog"></section>
+
+      <section>
+        <h2>Simulação</h2>
+        <div class="row">
+          <button id="btnPause">Pausar física</button>
+          <button id="btnReset">Voltar posições</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Sala virtual (desktop)</h2>
+        <div class="dims">
+          <label class="f" for="roomW">Largura m<input id="roomW" type="number" min="2" max="30" step="0.5"></label>
+          <label class="f" for="roomD">Fundo m<input id="roomD" type="number" min="2" max="30" step="0.5"></label>
+          <label class="f" for="roomH">Pé-direito m<input id="roomH" type="number" min="2" max="8" step="0.1"></label>
+        </div>
+        <p class="note">No Quest a sala virtual some e a física usa as paredes, piso e móveis reais escaneados.</p>
+      </section>
+
+      <section>
+        <h2>Projeto</h2>
+        <div class="row">
+          <button id="btnSample">Exemplo de loja</button>
+          <button id="btnClear">Limpar tudo</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="btnCopy">Copiar layout</button>
+          <button id="btnImport">Importar layout</button>
+        </div>
+        <textarea id="importBox" hidden placeholder="Cole aqui o JSON do layout e toque em Importar de novo"></textarea>
+        <p class="note">O layout fica salvo neste navegador automaticamente.</p>
+      </section>
+    </div>
+  </aside>
+
+  <section id="props" class="panel" hidden></section>
+
+  <div id="hud">
+    <div id="toast" role="status"></div>
+    <div id="keys"><b>clique</b> seleciona · <b>W</b> mover · <b>E</b> girar · <b>F</b> acionar · <b>Shift+clique</b> empurra · <b>Del</b> apaga · <b>espaço</b> pausa</div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import * as CANNON from 'cannon-es';
+
+const $ = s => document.querySelector(s);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const cv = v => new CANNON.Vec3(v.x, v.y, v.z);
+const Y = V(0, 1, 0), X = V(1, 0, 0), Z = V(0, 0, 1);
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+/* ---------- Render ---------- */
+const view = $('#view');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.xr.enabled = true;
+view.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x0f1720);
+scene.background = BG;
+const camera = new THREE.PerspectiveCamera(55, 1, 0.02, 100);
+camera.position.set(0.6, 4.2, 7.4);
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.target.set(0, 0.6, -0.4);
+orbit.enableDamping = true;
+orbit.maxPolarAngle = Math.PI * 0.495;
+orbit.update();
+
+function resize() {
+  if (renderer.xr.isPresenting) return;
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(view);
+resize();
+
+scene.add(new THREE.HemisphereLight(0xe3ecf5, 0x2a2f36, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.7);
+sun.position.set(4, 8, 3);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: 0.5, far: 30 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ opacity: 0.35 }));
+shadowCatcher.rotation.x = -Math.PI / 2; shadowCatcher.position.y = 0.002;
+shadowCatcher.receiveShadow = true; shadowCatcher.visible = false;
+scene.add(shadowCatcher);
+
+/* ---------- Física ---------- */
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.solver.iterations = 20;
+world.defaultContactMaterial.friction = 0.35;
+world.defaultContactMaterial.restitution = 0.08;
+let paused = false;
+
+const floorBody = new CANNON.Body({ type: CANNON.Body.STATIC, shape: new CANNON.Plane() });
+floorBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+world.addBody(floorBody);
+
+/* ---------- Sala virtual ---------- */
+const room = Object.assign({ w: 8, d: 6, h: 3 }, store.get('loja-rm-room') || {});
+const roomGroup = new THREE.Group(); scene.add(roomGroup);
+let roomBodies = [];
+const surfaces = []; // alvos de raio: piso, paredes, planos escaneados
+const liveSurfaces = () => surfaces.filter(s => s.parent !== roomGroup || roomGroup.visible);
+
+function buildRoom() {
+  for (const m of roomGroup.children) { const i = surfaces.indexOf(m); if (i >= 0) surfaces.splice(i, 1); }
+  roomGroup.clear();
+  roomBodies.forEach(b => world.removeBody(b)); roomBodies = [];
+  const { w, d, h } = room;
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ color: 0x1c2835, roughness: 0.95 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; floor.userData.surface = 'floor';
+  roomGroup.add(floor); surfaces.push(floor);
+  const pts = [];
+  for (let x = -w / 2; x <= w / 2 + 1e-6; x += 0.5) pts.push(V(x, 0.003, -d / 2), V(x, 0.003, d / 2));
+  for (let z = -d / 2; z <= d / 2 + 1e-6; z += 0.5) pts.push(V(-w / 2, 0.003, z), V(w / 2, 0.003, z));
+  roomGroup.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x2c4257 })));
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x2b3b4d, roughness: 0.9, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
+  const walls = [
+    { size: [w, h, 0.1], pos: [0, h / 2, -d / 2 - 0.05], n: [0, 0, 1] },
+    { size: [0.1, h, d], pos: [-w / 2 - 0.05, h / 2, 0], n: [1, 0, 0] },
+    { size: [0.1, h, d], pos: [w / 2 + 0.05, h / 2, 0], n: [-1, 0, 0] },
+  ];
+  for (const wl of walls) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(...wl.size), wallMat);
+    m.position.set(...wl.pos); m.receiveShadow = true;
+    m.userData.surface = 'wall'; m.userData.normal = V(...wl.n);
+    roomGroup.add(m); surfaces.push(m);
+    const b = new CANNON.Body({ type: CANNON.Body.STATIC, shape: new CANNON.Box(new CANNON.Vec3(wl.size[0] / 2, wl.size[1] / 2, wl.size[2] / 2)) });
+    b.position.set(...wl.pos); roomBodies.push(b);
+    if (roomGroup.visible) world.addBody(b);
+  }
+  store.set('loja-rm-room', room);
+}
+function setRoomPhysics(on) {
+  for (const b of roomBodies) { const has = world.bodies.includes(b); if (on && !has) world.addBody(b); if (!on && has) world.removeBody(b); }
+}
+
+/* ---------- Materiais ---------- */
+const C = { wood: 0xb98a5a, woodDark: 0x7d5a3a, steel: 0x9aa6b2, dark: 0x3b4652, amber: 0xf2a93b, red: 0xd9534f, white: 0xe6ebf0, glass: 0x8fd3ff, card: 0xc49a6c, green: 0x5cc98a, blue: 0x4a90d9 };
+const matCache = new Map();
+function mat(color, opts = {}) {
+  const k = color + JSON.stringify(opts);
+  if (!matCache.has(k)) matCache.set(k, new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.05, ...opts }));
+  return matCache.get(k);
+}
+const glassMat = mat(C.glass, { transparent: true, opacity: 0.32, roughness: 0.05, metalness: 0.1 });
+
+function beltTexture() {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#20262c'; g.fillRect(0, 0, 64, 64);
+  g.fillStyle = '#39434d'; g.fillRect(0, 0, 14, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/* ---------- Entidades ---------- */
+function makeShape(s) {
+  let geo, cs;
+  if (s.box) { const [x, y, z] = s.box; geo = new THREE.BoxGeometry(x, y, z); cs = new CANNON.Box(new CANNON.Vec3(x / 2, y / 2, z / 2)); }
+  else if (s.cyl) { const [r, h] = s.cyl; geo = new THREE.CylinderGeometry(r, r, h, 24); cs = new CANNON.Cylinder(r, r, h, 12); }
+  else if (s.sphere) { geo = new THREE.SphereGeometry(s.sphere, 28, 18); cs = new CANNON.Sphere(s.sphere); }
+  const offset = V(...(s.at || [0, 0, 0]));
+  const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...(s.rot || [0, 0, 0]), s.order || 'XYZ'));
+  return { geo, cs, offset, quat };
+}
+
+const entities = [];
+let uid = 0;
+
+class Entity {
+  constructor(type, params = {}) {
+    this.type = type; this.def = CATALOG[type]; this.id = ++uid;
+    this.params = {};
+    for (const [k, spec] of Object.entries(this.def.params || {})) this.params[k] = params[k] ?? spec[0];
+    this.anchor = new THREE.Object3D(); scene.add(this.anchor);
+    this.parts = []; this.constraints = []; this.state = {}; this.dragging = false;
+    entities.push(this);
+  }
+  part(o) {
+    const kind = o.kind || 'static';
+    const body = new CANNON.Body({
+      mass: kind === 'dynamic' ? (o.mass || 1) : 0,
+      type: kind === 'dynamic' ? CANNON.Body.DYNAMIC : kind === 'kinematic' ? CANNON.Body.KINEMATIC : CANNON.Body.STATIC,
+      linearDamping: o.ld ?? 0.05, angularDamping: o.ad ?? 0.12,
+    });
+    const group = new THREE.Group();
+    const p = { group, body, kind, local: { p: V(...(o.pos || [0, 0, 0])), q: new THREE.Quaternion().setFromEuler(new THREE.Euler(...(o.rot || [0, 0, 0]))) } };
+    for (const s of o.shapes) {
+      const { geo, cs, offset, quat } = makeShape(s);
+      const m = new THREE.Mesh(geo, s.mat || mat(s.color ?? o.color ?? C.steel));
+      m.position.copy(offset); m.quaternion.copy(quat);
+      m.castShadow = !s.noShadow; m.receiveShadow = true;
+      m.userData.ent = this; m.userData.part = p;
+      group.add(m);
+      if (!s.ghost) body.addShape(cs, cv(offset), new CANNON.Quaternion(quat.x, quat.y, quat.z, quat.w));
+    }
+    body.userData = { ent: this, part: p };
+    scene.add(group); world.addBody(body);
+    this.parts.push(p);
+    return p;
+  }
+  hinge(a, b, point, axis) {
+    const P = V(...point), A = V(...axis).normalize();
+    const loc = part => { const inv = part.local.q.clone().invert(); return { p: P.clone().sub(part.local.p).applyQuaternion(inv), a: A.clone().applyQuaternion(inv) }; };
+    const la = loc(a), lb = loc(b);
+    const c = new CANNON.HingeConstraint(a.body, b.body, { pivotA: cv(la.p), axisA: cv(la.a), pivotB: cv(lb.p), axisB: cv(lb.a), collideConnected: false });
+    world.addConstraint(c); this.constraints.push(c);
+    return c;
+  }
+  applyAnchor() {
+    this.anchor.updateMatrixWorld();
+    for (const p of this.parts) {
+      const wp = p.local.p.clone().applyMatrix4(this.anchor.matrixWorld);
+      const wq = this.anchor.quaternion.clone().multiply(p.local.q);
+      const b = p.body;
+      b.position.set(wp.x, wp.y, wp.z); b.previousPosition.copy(b.position); b.interpolatedPosition.copy(b.position);
+      b.quaternion.set(wq.x, wq.y, wq.z, wq.w); b.previousQuaternion.copy(b.quaternion);
+      b.velocity.setZero(); b.angularVelocity.setZero(); b.aabbNeedsUpdate = true; b.wakeUp();
+      p.homeP = wp; p.homeQ = wq;
+    }
+    this.sync();
+  }
+  followBody() {
+    const b = this.parts[0].body;
+    this.anchor.position.copy(b.position); this.anchor.quaternion.copy(b.quaternion);
+  }
+  sync() { for (const p of this.parts) { p.group.position.copy(p.body.position); p.group.quaternion.copy(p.body.quaternion); } }
+  setHome() { this.home = { p: this.anchor.position.toArray(), q: this.anchor.quaternion.toArray() }; }
+  goHome() {
+    if (!this.home) return;
+    this.anchor.position.fromArray(this.home.p); this.anchor.quaternion.fromArray(this.home.q);
+    this.applyAnchor();
+  }
+  clearParts() {
+    for (const c of this.constraints) world.removeConstraint(c);
+    for (const p of this.parts) {
+      world.removeBody(p.body); scene.remove(p.group);
+      p.group.traverse(o => o.geometry?.dispose());
+    }
+    this.parts = []; this.constraints = [];
+    this.state.tex?.dispose();
+  }
+  build() {
+    this.clearParts(); this.state = { on: this.state.on ?? true, open: this.state.open ?? false };
+    this.def.build(this, this.params); this.applyAnchor();
+  }
+  destroy() {
+    this.clearParts(); scene.remove(this.anchor);
+    entities.splice(entities.indexOf(this), 1);
+  }
+  meshes() { return this.parts.flatMap(p => p.group.children); }
+}
+
+/* Ângulo de uma peça articulada em torno de um eixo (no referencial da entidade). */
+function hingeAngle(e, part, axis, ref) {
+  const R = e.anchor.quaternion.clone().invert()
+    .multiply(new THREE.Quaternion().copy(part.body.quaternion))
+    .multiply(part.local.q.clone().invert());
+  const v = ref.clone().applyQuaternion(R);
+  const perp = axis.clone().cross(ref);
+  return Math.atan2(v.dot(perp), v.dot(ref));
+}
+/* Servo: motor de torque com PD e compensação de gravidade. */
+function servo(e, part, o) {
+  const ang = hingeAngle(e, part, o.axis, o.ref);
+  const axisW = o.axis.clone().applyQuaternion(e.anchor.quaternion);
+  const w = V().copy(part.body.angularVelocity).dot(axisW);
+  let t = o.kp * (o.target - ang) - o.kd * w;
+  if (o.pivot) {
+    const pv = o.pivot.clone().applyMatrix4(e.anchor.matrixWorld);
+    const r = V().copy(part.body.position).sub(pv);
+    const g = V(0, -9.82 * part.body.mass, 0);
+    t -= r.cross(g).dot(axisW);
+  }
+  t = clamp(t, -o.max, o.max);
+  part.body.torque.x += axisW.x * t; part.body.torque.y += axisW.y * t; part.body.torque.z += axisW.z * t;
+  return ang;
+}
+function worldDir(e, v) { return v.clone().applyQuaternion(e.anchor.quaternion); }
+function dynamicBodies(exclude) {
+  return world.bodies.filter(b => b.type === CANNON.Body.DYNAMIC && b.userData?.ent !== exclude);
+}
+const userPos = V();
+
+/* ---------- Catálogo ---------- */
+const P = (v, min, max, step, label) => [v, min, max, step, label];
+const CATALOG = {
+  mesa: {
+    label: 'Mesa', group: 'Móveis', floor: true,
+    params: { largura: P(1.2, 0.4, 3, 0.05, 'Largura m'), profundidade: P(0.7, 0.4, 2, 0.05, 'Fundo m'), altura: P(0.75, 0.4, 1.2, 0.05, 'Altura m') },
+    build(e, { largura: w, profundidade: d, altura: h }) {
+      const s = [{ box: [w, 0.04, d], at: [0, h - 0.02, 0], color: C.wood }];
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) s.push({ box: [0.05, h - 0.04, 0.05], at: [sx * (w / 2 - 0.06), (h - 0.04) / 2, sz * (d / 2 - 0.06)], color: C.dark });
+      e.part({ shapes: s });
+    },
+  },
+  estante: {
+    label: 'Estante', group: 'Móveis', floor: true,
+    params: { largura: P(1.0, 0.4, 3, 0.05, 'Largura m'), altura: P(1.8, 0.5, 2.6, 0.05, 'Altura m'), profundidade: P(0.4, 0.2, 1, 0.05, 'Fundo m'), prateleiras: P(5, 2, 10, 1, 'Prateleiras') },
+    build(e, { largura: w, altura: h, profundidade: d, prateleiras: n }) {
+      const t = 0.025;
+      const s = [
+        { box: [t, h, d], at: [-w / 2 + t / 2, h / 2, 0], color: C.white },
+        { box: [t, h, d], at: [w / 2 - t / 2, h / 2, 0], color: C.white },
+        { box: [w, h, 0.012], at: [0, h / 2, -d / 2 + 0.006], color: C.white },
+      ];
+      for (let i = 0; i < n; i++) s.push({ box: [w - 2 * t, t, d - 0.012], at: [0, 0.06 + i * (h - 0.08) / (n - 1), 0.006], color: C.wood });
+      e.part({ shapes: s });
+    },
+  },
+  balcao: {
+    label: 'Balcão', group: 'Móveis', floor: true,
+    params: { largura: P(1.8, 0.6, 5, 0.1, 'Largura m'), profundidade: P(0.6, 0.3, 1.2, 0.05, 'Fundo m'), altura: P(1.0, 0.6, 1.3, 0.05, 'Altura m') },
+    build(e, { largura: w, profundidade: d, altura: h }) {
+      e.part({ shapes: [{ box: [w, h - 0.04, d], at: [0, (h - 0.04) / 2, 0], color: C.dark }, { box: [w + 0.06, 0.04, d + 0.06], at: [0, h - 0.02, 0], color: C.wood }] });
+    },
+  },
+  parede: {
+    label: 'Parede / divisória', group: 'Móveis', floor: true,
+    params: { largura: P(2, 0.3, 8, 0.1, 'Largura m'), altura: P(2.4, 0.5, 4, 0.1, 'Altura m'), espessura: P(0.1, 0.05, 0.3, 0.01, 'Espessura m') },
+    build(e, { largura: w, altura: h, espessura: t }) { e.part({ shapes: [{ box: [w, h, t], at: [0, h / 2, 0], color: 0xc9d2da }] }); },
+  },
+  cadeira: {
+    label: 'Cadeira', group: 'Móveis', follow: true, lift: () => 0.47,
+    params: {},
+    build(e) {
+      const s = [{ box: [0.42, 0.04, 0.42], color: C.wood }, { box: [0.42, 0.42, 0.03], at: [0, 0.23, -0.195], color: C.wood }];
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) s.push({ box: [0.035, 0.43, 0.035], at: [sx * 0.18, -0.235, sz * 0.18], color: C.dark });
+      e.part({ kind: 'dynamic', mass: 4, shapes: s });
+    },
+  },
+  porta: {
+    label: 'Porta', sub: 'dobradiça + mola', group: 'Aberturas', floor: true, wall: true,
+    params: { largura: P(0.9, 0.6, 1.4, 0.05, 'Largura m'), altura: P(2.1, 1.8, 2.6, 0.05, 'Altura m'), mola: P(4, 0, 40, 1, 'Mola N·m/rad') },
+    build(e, { largura: w, altura: h }) {
+      const t = 0.08;
+      const frame = e.part({ shapes: [
+        { box: [t, h, 0.12], at: [-w / 2 - t / 2, h / 2, 0], color: C.white },
+        { box: [t, h, 0.12], at: [w / 2 + t / 2, h / 2, 0], color: C.white },
+        { box: [w + 2 * t, t, 0.12], at: [0, h + t / 2, 0], color: C.white },
+      ] });
+      const leaf = e.part({ kind: 'dynamic', mass: 15, ad: 0.15, pos: [0, h / 2 + 0.006, 0], shapes: [
+        { box: [w - 0.02, h - 0.02, 0.04], color: C.wood },
+        { box: [0.12, 0.025, 0.12], at: [w / 2 - 0.1, -0.05, 0], color: C.steel, ghost: true },
+      ] });
+      e.hinge(frame, leaf, [-w / 2, h / 2, 0], [0, 1, 0]);
+    },
+    update(e) {
+      const leaf = e.parts[1];
+      servo(e, leaf, { axis: Y, ref: X, target: 0, kp: e.params.mola, kd: 1.5, max: 60 });
+    },
+    interact(e) {
+      const leaf = e.parts[1], ang = hingeAngle(e, leaf, Y, X);
+      const k = ang < -0.25 ? -12 : ang > 0.25 ? 12 : 12; // abre para dentro (+z local)
+      leaf.body.applyLocalImpulse(new CANNON.Vec3(0, 0, k), new CANNON.Vec3(e.params.largura / 2 - 0.1, 0, 0));
+    },
+    status(e) { return `${Math.round(Math.abs(hingeAngle(e, e.parts[1], Y, X)) * 180 / Math.PI)}° aberta`; },
+  },
+  portaAuto: {
+    label: 'Porta automática', sub: 'motor + sensor', group: 'Aberturas', floor: true, wall: true,
+    params: { largura: P(1.6, 1, 3, 0.1, 'Vão m'), altura: P(2.2, 1.9, 3, 0.05, 'Altura m'), sensor: P(1.6, 0.5, 4, 0.1, 'Sensor m'), velocidade: P(0.8, 0.2, 2, 0.1, 'Vel. m/s') },
+    build(e, { largura: w, altura: h }) {
+      e.part({ shapes: [
+        { box: [0.08, h, 0.14], at: [-w / 2 - 0.04, h / 2, 0], color: C.steel },
+        { box: [0.08, h, 0.14], at: [w / 2 + 0.04, h / 2, 0], color: C.steel },
+        { box: [w * 2 + 0.16, 0.18, 0.18], at: [0, h + 0.09, 0], color: C.dark },
+      ] });
+      for (const sx of [-1, 1]) {
+        e.part({ kind: 'kinematic', pos: [sx * w / 4, h / 2 + 0.01, 0.02], shapes: [
+          { box: [w / 2, h - 0.02, 0.025], mat: glassMat, noShadow: true },
+          { box: [w / 2, 0.06, 0.04], at: [0, -h / 2 + 0.04, 0], color: C.steel },
+          { box: [0.04, h - 0.02, 0.04], at: [-sx * (w / 4 - 0.02), 0, 0], color: C.steel },
+        ] });
+      }
+    },
+    update(e) {
+      const c = V(0, 1, 0).applyMatrix4(e.anchor.matrixWorld);
+      const r = e.params.sensor;
+      let near = e.state.forceOpen || userPos.distanceTo(c) < r + 0.4;
+      if (!near) for (const b of dynamicBodies(e)) if (c.distanceTo(V().copy(b.position)) < r) { near = true; break; }
+      e.state.near = near;
+      const ax = worldDir(e, X), w = e.params.largura;
+      [[e.parts[1], -1], [e.parts[2], 1]].forEach(([p, sign]) => {
+        const off = V().copy(p.body.position).sub(p.homeP).dot(ax) * sign;
+        const target = near && e.state.on ? w / 2 * 0.92 : 0;
+        const v = clamp((target - off) * 5, -e.params.velocidade, e.params.velocidade) * sign;
+        p.body.velocity.set(ax.x * v, 0, ax.z * v);
+      });
+    },
+    interact(e) { e.state.forceOpen = !e.state.forceOpen; toast(e.state.forceOpen ? 'Porta travada aberta' : 'Porta no automático'); },
+    status(e) { return e.state.forceOpen ? 'travada aberta' : e.state.near ? 'abrindo (sensor)' : 'fechada · automático'; },
+  },
+  janela: {
+    label: 'Janela basculante', sub: 'motorizada', group: 'Aberturas', wall: true, floor: true,
+    params: { largura: P(1.2, 0.4, 3, 0.05, 'Largura m'), altura: P(1.0, 0.4, 2, 0.05, 'Altura m'), peitoril: P(1.1, 0.2, 2, 0.05, 'Peitoril m') },
+    build(e, { largura: w, altura: h, peitoril: s }) {
+      const t = 0.05;
+      e.part({ shapes: [
+        { box: [w, t, 0.1], at: [0, s - t / 2, 0], color: C.white },
+        { box: [w, t, 0.1], at: [0, s + h + t / 2, 0], color: C.white },
+        { box: [t, h + 2 * t, 0.1], at: [-w / 2 - t / 2, s + h / 2, 0], color: C.white },
+        { box: [t, h + 2 * t, 0.1], at: [w / 2 + t / 2, s + h / 2, 0], color: C.white },
+      ] });
+      e.part({ kind: 'dynamic', mass: 6, ad: 0.6, pos: [0, s + h / 2, 0.02], shapes: [
+        { box: [w - 0.02, h - 0.02, 0.025], mat: glassMat, noShadow: true },
+        { box: [w - 0.02, 0.04, 0.035], at: [0, -h / 2 + 0.03, 0], color: C.white, ghost: true },
+        { box: [w - 0.02, 0.04, 0.035], at: [0, h / 2 - 0.03, 0], color: C.white, ghost: true },
+      ] });
+      e.hinge(e.parts[0], e.parts[1], [0, s + h - 0.01, 0.02], [1, 0, 0]);
+    },
+    update(e) {
+      const { altura: h, peitoril: s } = e.params;
+      servo(e, e.parts[1], { axis: X, ref: V(0, -1, 0), target: e.state.open ? -0.6 : 0, kp: 40, kd: 6, max: 60, pivot: V(0, s + h - 0.01, 0.02) });
+    },
+    interact(e) { e.state.open = !e.state.open; },
+    status(e) { return e.state.open ? 'motor: abrindo' : 'motor: fechando'; },
+  },
+  ventilador: {
+    label: 'Ventilador', sub: 'motor + vento', group: 'Motorizados', floor: true,
+    params: { altura: P(1.3, 0.5, 2.2, 0.05, 'Altura m'), velocidade: P(14, 0, 40, 1, 'Vel. rad/s'), vento: P(6, 0, 30, 1, 'Vento N') },
+    build(e, { altura: h }) {
+      e.part({ shapes: [
+        { cyl: [0.22, 0.04], at: [0, 0.02, 0], color: C.dark },
+        { cyl: [0.025, h], at: [0, h / 2, 0], color: C.steel },
+        { box: [0.14, 0.14, 0.18], at: [0, h, -0.03], color: C.dark },
+      ] });
+      const s = [{ cyl: [0.055, 0.06], rot: [Math.PI / 2, 0, 0], color: C.amber }];
+      for (let i = 0; i < 3; i++) {
+        const a = i * Math.PI * 2 / 3;
+        s.push({ box: [0.1, 0.28, 0.012], at: [Math.sin(a) * 0.19, Math.cos(a) * 0.19, 0], rot: [0, 0.35, -a], order: 'ZYX', color: C.white });
+      }
+      e.part({ kind: 'dynamic', mass: 0.8, ad: 0.05, pos: [0, h, 0.1], shapes: s });
+      e.hinge(e.parts[0], e.parts[1], [0, h, 0.1], [0, 0, 1]);
+    },
+    update(e, dt) {
+      const rotor = e.parts[1], ax = worldDir(e, Z);
+      const w = V().copy(rotor.body.angularVelocity).dot(ax);
+      const target = e.state.on ? e.params.velocidade : 0;
+      const t = clamp((target - w) * 0.25, -2, 2);
+      rotor.body.torque.vadd(cv(ax.clone().multiplyScalar(t)), rotor.body.torque);
+      const spin = Math.abs(w) / 40;
+      if (spin < 0.02) return;
+      const c = V().copy(rotor.body.position);
+      for (const b of dynamicBodies(e)) {
+        const rel = V().copy(b.position).sub(c), along = rel.dot(ax);
+        if (along < 0 || along > 4) continue;
+        const lat = rel.clone().sub(ax.clone().multiplyScalar(along)).length();
+        if (lat > 0.45 + along * 0.2) continue;
+        const f = e.params.vento * spin * (1 - along / 4);
+        b.applyForce(cv(ax.clone().multiplyScalar(f)));
+      }
+    },
+    interact(e) { e.state.on = !e.state.on; },
+    status(e) { const w = Math.abs(V().copy(e.parts[1].body.angularVelocity).dot(worldDir(e, Z))); return `${e.state.on ? 'ligado' : 'desligado'} · ${Math.round(w * 60 / (2 * Math.PI))} rpm`; },
+  },
+  esteira: {
+    label: 'Esteira', sub: 'transportadora', group: 'Motorizados', floor: true,
+    params: { comprimento: P(2.4, 0.8, 8, 0.1, 'Compr. m'), largura: P(0.6, 0.3, 1.5, 0.05, 'Largura m'), altura: P(0.7, 0.2, 1.2, 0.05, 'Altura m'), velocidade: P(0.6, -2, 2, 0.1, 'Vel. m/s') },
+    build(e, { comprimento: L, largura: W, altura: H }) {
+      const s = [
+        { box: [L + 0.04, 0.12, 0.04], at: [0, H - 0.04, W / 2 + 0.02], color: C.amber },
+        { box: [L + 0.04, 0.12, 0.04], at: [0, H - 0.04, -W / 2 - 0.02], color: C.amber },
+        { cyl: [0.05, W], at: [-L / 2, H - 0.05, 0], rot: [Math.PI / 2, 0, 0], color: C.steel, ghost: true },
+        { cyl: [0.05, W], at: [L / 2, H - 0.05, 0], rot: [Math.PI / 2, 0, 0], color: C.steel, ghost: true },
+      ];
+      const nLegs = Math.max(2, Math.ceil(L / 1.2) + 1);
+      for (let i = 0; i < nLegs; i++) {
+        const x = -L / 2 + 0.1 + i * (L - 0.2) / (nLegs - 1);
+        for (const sz of [-1, 1]) s.push({ box: [0.05, H - 0.1, 0.05], at: [x, (H - 0.1) / 2, sz * (W / 2 - 0.02)], color: C.dark });
+      }
+      e.part({ shapes: s });
+      e.state.tex = beltTexture(); e.state.tex.repeat.set(L / 0.15, 1);
+      const belt = e.part({ shapes: [{ box: [L, 0.06, W], at: [0, H - 0.03, 0], mat: new THREE.MeshStandardMaterial({ map: e.state.tex, roughness: 0.9 }) }] });
+      belt.body.userData.belt = e;
+    },
+    frame(e, dt) { if (!paused && e.state.on) e.state.tex.offset.x -= e.params.velocidade * dt / 0.15; },
+    interact(e) { e.state.on = !e.state.on; },
+    status(e) { return `${e.state.on ? 'ligada' : 'desligada'} · ${e.params.velocidade.toFixed(1)} m/s`; },
+  },
+  cancela: {
+    label: 'Cancela', sub: 'servo motor', group: 'Motorizados', floor: true,
+    params: { comprimento: P(2.5, 1, 5, 0.1, 'Braço m') },
+    build(e, { comprimento: L }) {
+      e.part({ shapes: [{ box: [0.26, 1.0, 0.26], at: [0, 0.5, 0], color: C.amber }, { box: [0.3, 0.04, 0.3], at: [0, 1.02, 0], color: C.dark }] });
+      const s = [{ box: [L, 0.07, 0.05], at: [L / 2 - 0.15, 0, 0], color: C.white }, { cyl: [0.07, 0.08], rot: [Math.PI / 2, 0, 0], color: C.dark }];
+      for (let i = 1; i < L / 0.5; i += 2) s.push({ box: [0.25, 0.075, 0.055], at: [i * 0.5 - 0.15 + 0.125, 0, 0], color: C.red, ghost: true });
+      e.part({ kind: 'dynamic', mass: 3, ad: 0.3, pos: [0, 0.85, 0.18], shapes: s });
+      e.hinge(e.parts[0], e.parts[1], [0, 0.85, 0.18], [0, 0, 1]);
+    },
+    update(e) {
+      e.state.ang = servo(e, e.parts[1], { axis: Z, ref: X, target: e.state.open ? 1.45 : 0, kp: 120, kd: 22, max: 160, pivot: V(0, 0.85, 0.18) });
+    },
+    interact(e) { e.state.open = !e.state.open; },
+    status(e) { return `${e.state.open ? 'abrindo' : 'fechando'} · ${Math.round((e.state.ang || 0) * 180 / Math.PI)}°`; },
+  },
+  elevador: {
+    label: 'Plataforma elevatória', sub: 'motor linear', group: 'Motorizados', floor: true,
+    params: { largura: P(1.2, 0.6, 3, 0.1, 'Largura m'), curso: P(1.4, 0.3, 3, 0.1, 'Curso m'), velocidade: P(0.35, 0.05, 1.5, 0.05, 'Vel. m/s') },
+    build(e, { largura: w, curso: c }) {
+      const s = [];
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) s.push({ box: [0.06, c + 0.4, 0.06], at: [sx * (w / 2 + 0.05), (c + 0.4) / 2, sz * (w / 2 + 0.05)], color: C.amber });
+      e.part({ shapes: s });
+      e.part({ kind: 'kinematic', pos: [0, 0.05, 0], shapes: [{ box: [w, 0.06, w], color: C.dark }, { box: [w, 0.01, w], at: [0, 0.035, 0], color: C.steel, ghost: true }] });
+      e.state.dir = 1; e.state.wait = 0;
+    },
+    update(e, dt) {
+      const p = e.parts[1], off = p.body.position.y - p.homeP.y;
+      if (!e.state.on) { p.body.velocity.setZero(); return; }
+      if (e.state.wait > 0) { e.state.wait -= dt; p.body.velocity.setZero(); return; }
+      if (e.state.dir > 0 && off >= e.params.curso) { e.state.dir = -1; e.state.wait = 1.5; }
+      else if (e.state.dir < 0 && off <= 0) { e.state.dir = 1; e.state.wait = 1.5; }
+      p.body.velocity.set(0, e.state.dir * e.params.velocidade, 0);
+    },
+    interact(e) { e.state.on = !e.state.on; },
+    status(e) { return `${e.state.on ? 'ligada' : 'parada'} · ${(e.parts[1].body.position.y - e.parts[1].homeP.y).toFixed(2)} m`; },
+  },
+  caixa: {
+    label: 'Caixa', group: 'Objetos soltos', follow: true, lift: p => p.lado / 2 + 0.01,
+    params: { lado: P(0.35, 0.1, 1, 0.05, 'Lado m'), massa: P(4, 0.5, 60, 0.5, 'Massa kg') },
+    build(e, { lado: l, massa: m }) { e.part({ kind: 'dynamic', mass: m, shapes: [{ box: [l, l, l], color: C.card }, { box: [l + 0.002, 0.05, l + 0.002], color: 0xa77b4f, ghost: true }] }); },
+  },
+  bola: {
+    label: 'Bola', group: 'Objetos soltos', follow: true, lift: p => p.raio + 0.01,
+    params: { raio: P(0.12, 0.05, 0.5, 0.01, 'Raio m') },
+    build(e, { raio: r }) { e.part({ kind: 'dynamic', mass: 0.6, ad: 0.3, shapes: [{ sphere: r, color: C.blue }] }); },
+  },
+};
+
+/* Esteira: empurra o que está em contato com a lona. */
+world.addEventListener('preStep', () => {
+  const dt = world.dt;
+  for (const e of entities) {
+    if (e.dragging && e.def.follow) e.applyAnchor();
+    e.def.update?.(e, dt);
+  }
+  const done = new Set();
+  for (const c of world.contacts) {
+    let belt = c.bi.userData?.belt ? c.bi : c.bj.userData?.belt ? c.bj : null;
+    if (!belt) continue;
+    const other = belt === c.bi ? c.bj : c.bi;
+    if (other.type !== CANNON.Body.DYNAMIC || done.has(other)) continue;
+    done.add(other);
+    const e = belt.userData.belt;
+    if (!e.state.on) continue;
+    const ax = worldDir(e, X);
+    const along = V().copy(other.velocity).dot(ax);
+    const dv = (e.params.velocidade - along) * 0.8;
+    other.velocity.x += ax.x * dv; other.velocity.z += ax.z * dv;
+  }
+});
+
+/* ---------- Criar / salvar ---------- */
+function spawn(type, { p, q, params, state } = {}) {
+  const e = new Entity(type, params);
+  if (p) e.anchor.position.fromArray(p);
+  if (q) e.anchor.quaternion.fromArray(q);
+  if (state) Object.assign(e.state, state);
+  e.build(); e.setHome();
+  return e;
+}
+function serialize() {
+  return { v: 1, items: entities.map(e => ({ type: e.type, params: e.params, p: e.home.p.map(n => +n.toFixed(3)), q: e.home.q.map(n => +n.toFixed(4)), state: { on: e.state.on, open: e.state.open } })) };
+}
+let saveTimer;
+function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => store.set('loja-rm-layout', serialize()), 300); }
+function clearAll() { select(null); while (entities.length) entities[0].destroy(); }
+function load(data) {
+  clearAll();
+  for (const it of data.items || []) if (CATALOG[it.type]) spawn(it.type, it);
+  save();
+}
+const yawQ = a => new THREE.Quaternion().setFromAxisAngle(Y, a).toArray();
+function sampleLayout() {
+  const { w, d } = room;
+  return { items: [
+    { type: 'portaAuto', p: [0, 0, -d / 2 + 0.08], q: yawQ(0) },
+    { type: 'estante', p: [-w / 2 + 0.25, 0, -1.2], q: yawQ(Math.PI / 2) },
+    { type: 'estante', p: [-w / 2 + 0.25, 0, 0.0], q: yawQ(Math.PI / 2) },
+    { type: 'janela', p: [-w / 2 + 0.05, 0, 1.6], q: yawQ(Math.PI / 2) },
+    { type: 'porta', p: [w / 2 - 0.07, 0, 1.8], q: yawQ(-Math.PI / 2) },
+    { type: 'balcao', p: [2.2, 0, 0.6], q: yawQ(-Math.PI / 2) },
+    { type: 'esteira', p: [1.6, 0, -1.2], q: yawQ(0) },
+    { type: 'caixa', p: [0.8, 1.05, -1.2] }, { type: 'caixa', p: [1.3, 1.05, -1.2] }, { type: 'caixa', p: [0.75, 1.5, -1.2] },
+    { type: 'ventilador', p: [-1.6, 0, -2.3], q: yawQ(0.35), params: { altura: 0.55 } },
+    { type: 'mesa', p: [-1.0, 0, 0.9] },
+    { type: 'cadeira', p: [-1.0, 0.47, 1.6], q: yawQ(Math.PI) },
+    { type: 'cancela', p: [0.4, 0, 2.2] },
+    { type: 'elevador', p: [3.2, 0, -2.2] },
+    { type: 'caixa', p: [3.2, 0.3, -2.2], params: { lado: 0.4, massa: 6 } },
+    { type: 'bola', p: [-1.6, 0.2, -1.4] },
+  ] };
+}
+
+/* ---------- Seleção e edição no desktop ---------- */
+let selected = null;
+const selBox = new THREE.Box3Helper(new THREE.Box3(), 0xf2a93b);
+selBox.visible = false; scene.add(selBox);
+const tc = new TransformControls(camera, renderer.domElement);
+tc.setSize(0.8); tc.setTranslationSnap(0.05); tc.setRotationSnap(THREE.MathUtils.degToRad(15));
+scene.add(tc);
+tc.addEventListener('dragging-changed', ev => {
+  orbit.enabled = !ev.value;
+  if (!selected) return;
+  selected.dragging = ev.value;
+  if (!ev.value) { selected.setHome(); save(); }
+});
+tc.addEventListener('objectChange', () => selected?.applyAnchor());
+function setMode(m) {
+  tc.setMode(m);
+  tc.showX = tc.showZ = m === 'translate';
+  tc.showY = m === 'rotate' || !selected?.def.floor || selected?.def.follow;
+}
+function select(e) {
+  selected = e;
+  if (e && !renderer.xr.isPresenting) { tc.attach(e.anchor); setMode(tc.mode); } else tc.detach();
+  selBox.visible = !!e;
+  renderProps();
+}
+
+const propsEl = $('#props');
+function renderProps() {
+  if (!selected || renderer.xr.isPresenting) { propsEl.hidden = true; return; }
+  const e = selected, d = e.def;
+  propsEl.hidden = false;
+  const fields = Object.entries(d.params || {}).map(([k, [, min, max, step, label]]) =>
+    `<label class="f" for="pp-${k}">${label}<input id="pp-${k}" data-k="${k}" type="number" min="${min}" max="${max}" step="${step}" value="${e.params[k]}"></label>`).join('');
+  propsEl.innerHTML = `
+    <h3>${d.label}${d.status ? `<span class="pill" id="propStatus"></span>` : ''}</h3>
+    ${fields ? `<div class="params">${fields}</div>` : ''}
+    ${d.interact ? `<button class="primary wide" id="ppAct">Acionar (F)</button>` : ''}
+    <div class="row"><button id="ppMove">Mover</button><button id="ppRot">Girar</button><button id="ppDup">Duplicar</button><button id="ppDel">Apagar</button></div>
+    <div class="meta" id="propMeta"></div>`;
+  propsEl.querySelectorAll('input[data-k]').forEach(inp => inp.addEventListener('change', () => {
+    const [, min, max] = d.params[inp.dataset.k];
+    const v = clamp(parseFloat(inp.value) || 0, min, max);
+    inp.value = v; e.params[inp.dataset.k] = v;
+    e.goHome(); e.build(); save();
+  }));
+  $('#ppAct')?.addEventListener('click', () => act(e));
+  $('#ppMove').onclick = () => setMode('translate');
+  $('#ppRot').onclick = () => setMode('rotate');
+  $('#ppDup').onclick = () => duplicate(e);
+  $('#ppDel').onclick = () => remove(e);
+  updatePropsLive();
+}
+function updatePropsLive() {
+  if (!selected || propsEl.hidden) return;
+  const s = $('#propStatus');
+  if (s && selected.def.status) { s.textContent = selected.def.status(selected); s.classList.toggle('on', !!(selected.state.on || selected.state.open || selected.state.near)); }
+  const m = $('#propMeta'), p = selected.anchor.position;
+  const yaw = THREE.MathUtils.radToDeg(new THREE.Euler().setFromQuaternion(selected.anchor.quaternion, 'YXZ').y);
+  if (m) m.textContent = `x ${p.x.toFixed(2)}  z ${p.z.toFixed(2)}  y ${p.y.toFixed(2)}  ${Math.round(yaw)}°`;
+}
+function act(e) { if (e?.def.interact) { e.def.interact(e); save(); } }
+function remove(e) { if (!e) return; if (selected === e) select(null); e.destroy(); save(); }
+function duplicate(e) {
+  const off = V(0.5, 0, 0.5);
+  const n = spawn(e.type, { p: e.anchor.position.clone().add(off).toArray(), q: e.anchor.quaternion.toArray(), params: { ...e.params } });
+  select(n); save();
+}
+
+function addFromPanel(type) {
+  const def = CATALOG[type];
+  const t = orbit.target, j = () => (Math.random() - 0.5) * 0.8;
+  let p, q = yawQ(0);
+  if (def.wall) p = [clamp(t.x + j(), -room.w / 2 + 1, room.w / 2 - 1), 0, -room.d / 2 + 0.08];
+  else if (def.follow) p = [t.x + j(), def.lift(paramsOf(type)) + 0.4, t.z + j()];
+  else p = [t.x + j(), 0, t.z + j()];
+  const e = spawn(type, { p, q });
+  select(e); save();
+  toast(`${def.label} adicionada`);
+}
+const paramsOf = type => Object.fromEntries(Object.entries(CATALOG[type].params || {}).map(([k, s]) => [k, s[0]]));
+
+const catEl = $('#catalog');
+const groups = {};
+for (const [k, d] of Object.entries(CATALOG)) (groups[d.group] ||= []).push([k, d]);
+catEl.innerHTML = Object.entries(groups).map(([g, items]) =>
+  `<h2>${g}</h2><div class="grid">${items.map(([k, d]) => `<button data-add="${k}">${d.label}${d.sub ? `<small>${d.sub}</small>` : ''}</button>`).join('')}</div>`).join('');
+catEl.addEventListener('click', ev => { const b = ev.target.closest('[data-add]'); if (b) addFromPanel(b.dataset.add); });
+
+/* Clique no canvas: selecionar, empurrar, duplo clique aciona */
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+function allMeshes() { return entities.flatMap(e => e.meshes()); }
+function pickAt(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  return raycaster.intersectObjects(allMeshes(), false)[0];
+}
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', ev => { downAt = { x: ev.clientX, y: ev.clientY }; });
+renderer.domElement.addEventListener('pointerup', ev => {
+  if (!downAt || tc.dragging) return;
+  const moved = Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y); downAt = null;
+  if (moved > 5 || tc.axis) return;
+  const hit = pickAt(ev);
+  if (ev.shiftKey && hit) {
+    const b = hit.object.userData.part.body;
+    if (b.type === CANNON.Body.DYNAMIC) {
+      const dir = raycaster.ray.direction.clone().multiplyScalar(b.mass * 3);
+      b.applyImpulse(cv(dir), cv(hit.point.clone().sub(V().copy(b.position))));
+      b.wakeUp();
+    }
+    return;
+  }
+  select(hit ? hit.object.userData.ent : null);
+});
+renderer.domElement.addEventListener('dblclick', ev => { const hit = pickAt(ev); if (hit) act(hit.object.userData.ent); });
+
+addEventListener('keydown', ev => {
+  if (ev.target.closest?.('input, textarea')) return;
+  const k = ev.key.toLowerCase();
+  if (k === 'w' || k === 'g') setMode('translate');
+  else if (k === 'e' || k === 'r') setMode('rotate');
+  else if (k === 'f') act(selected);
+  else if (k === 'delete' || k === 'backspace') remove(selected);
+  else if (k === 'escape') select(null);
+  else if (k === ' ') { ev.preventDefault(); togglePause(); }
+  else if (k === 'd' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); if (selected) duplicate(selected); }
+});
+
+function togglePause() { paused = !paused; $('#btnPause').textContent = paused ? 'Continuar física' : 'Pausar física'; drawMenu(); }
+function resetAll() { for (const e of entities) e.goHome(); toast('Posições restauradas'); }
+$('#btnPause').onclick = togglePause;
+$('#btnReset').onclick = resetAll;
+$('#btnSample').onclick = () => { load(sampleLayout()); toast('Exemplo carregado'); };
+$('#btnClear').onclick = () => { clearAll(); save(); toast('Layout vazio'); };
+$('#btnCopy').onclick = () => {
+  const txt = JSON.stringify(serialize());
+  navigator.clipboard?.writeText(txt).then(() => toast('Layout copiado'), () => { const b = $('#importBox'); b.hidden = false; b.value = txt; b.select(); toast('Copie o texto selecionado'); });
+};
+$('#btnImport').onclick = () => {
+  const b = $('#importBox');
+  if (b.hidden || !b.value.trim()) { b.hidden = false; b.value = ''; b.focus(); return; }
+  try { load(JSON.parse(b.value)); b.hidden = true; toast('Layout importado'); } catch { toast('Esse texto não é um layout válido'); }
+};
+$('#menuToggle').onclick = () => { const t = $('#tools'); t.classList.toggle('collapsed'); $('#menuToggle').setAttribute('aria-expanded', !t.classList.contains('collapsed')); };
+for (const [id, key] of [['roomW', 'w'], ['roomD', 'd'], ['roomH', 'h']]) {
+  const inp = $('#' + id); inp.value = room[key];
+  inp.addEventListener('change', () => { room[key] = clamp(parseFloat(inp.value) || room[key], +inp.min, +inp.max); inp.value = room[key]; buildRoom(); });
+}
+
+/* ---------- WebXR (Quest 3) ---------- */
+const xr = { session: null, mode: null, planes: new Map(), meshes: new Map(), showScan: true, ctrls: [], menuOwner: null };
+const SCAN_COLORS = { floor: 0x5cc98a, wall: 0x4a90d9, ceiling: 0x8ba0b3, table: 0xf2a93b, door: 0xd9534f, window: 0x8fd3ff };
+
+function scanMaterial(label) {
+  return new THREE.MeshBasicMaterial({ color: SCAN_COLORS[label] ?? 0xf2a93b, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: true });
+}
+function applyScanVisibility(rec) {
+  rec.mesh.material.colorWrite = xr.showScan;
+  if (rec.edges) rec.edges.visible = xr.showScan;
+}
+function makePlaneRecord(plane) {
+  const pts = plane.polygon.map(p => new THREE.Vector2(p.x, p.z));
+  const geo = new THREE.ShapeGeometry(new THREE.Shape(pts)); geo.rotateX(Math.PI / 2);
+  const mesh = new THREE.Mesh(geo, scanMaterial(plane.semanticLabel || (plane.orientation === 'vertical' ? 'wall' : 'floor')));
+  mesh.matrixAutoUpdate = false; mesh.renderOrder = -1;
+  mesh.userData.surface = plane.orientation === 'vertical' ? 'wall' : 'floor';
+  const edges = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(plane.polygon.map(p => V(p.x, 0, p.z))), new THREE.LineBasicMaterial({ color: mesh.material.color }));
+  mesh.add(edges);
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const p of plane.polygon) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z); }
+  const body = new CANNON.Body({ type: CANNON.Body.STATIC });
+  body.addShape(new CANNON.Box(new CANNON.Vec3(Math.max(0.01, (maxX - minX) / 2), 0.02, Math.max(0.01, (maxZ - minZ) / 2))), new CANNON.Vec3((minX + maxX) / 2, -0.02, (minZ + maxZ) / 2));
+  world.addBody(body); scene.add(mesh); surfaces.push(mesh);
+  const rec = { mesh, edges, body, t: plane.lastChangedTime };
+  applyScanVisibility(rec);
+  return rec;
+}
+function makeMeshRecord(m) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(m.vertices), 3));
+  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(m.indices), 1));
+  geo.computeBoundingBox();
+  const mesh = new THREE.Mesh(geo, scanMaterial(m.semanticLabel));
+  mesh.material.wireframe = true; mesh.matrixAutoUpdate = false; mesh.renderOrder = -1;
+  mesh.userData.surface = 'mesh';
+  let body = null;
+  const label = (m.semanticLabel || '').toLowerCase();
+  if (label && label !== 'global mesh' && label !== 'wall' && label !== 'floor' && label !== 'ceiling') {
+    const bb = geo.boundingBox, s = bb.getSize(V()), c = bb.getCenter(V());
+    body = new CANNON.Body({ type: CANNON.Body.STATIC });
+    body.addShape(new CANNON.Box(new CANNON.Vec3(Math.max(0.01, s.x / 2), Math.max(0.01, s.y / 2), Math.max(0.01, s.z / 2))), cv(c));
+    world.addBody(body);
+  }
+  scene.add(mesh); surfaces.push(mesh);
+  const rec = { mesh, body, t: m.lastChangedTime };
+  applyScanVisibility(rec);
+  return rec;
+}
+function dropRecord(rec) {
+  scene.remove(rec.mesh); rec.mesh.geometry.dispose(); rec.mesh.material.dispose();
+  const i = surfaces.indexOf(rec.mesh); if (i >= 0) surfaces.splice(i, 1);
+  if (rec.body) world.removeBody(rec.body);
+}
+function placeRecord(rec, pose) {
+  rec.mesh.matrix.fromArray(pose.transform.matrix); rec.mesh.matrixWorldNeedsUpdate = true;
+  if (rec.body) {
+    const { position: p, orientation: o } = pose.transform;
+    rec.body.position.set(p.x, p.y, p.z); rec.body.quaternion.set(o.x, o.y, o.z, o.w); rec.body.aabbNeedsUpdate = true;
+  }
+}
+function trackScan(frame, list, map, make, spaceOf) {
+  if (!list) return;
+  const ref = renderer.xr.getReferenceSpace();
+  for (const [k, rec] of map) if (!list.has(k)) { dropRecord(rec); map.delete(k); }
+  for (const k of list) {
+    let rec = map.get(k);
+    if (!rec || rec.t !== k.lastChangedTime) { if (rec) dropRecord(rec); rec = make(k); map.set(k, rec); }
+    const pose = frame.getPose(spaceOf(k), ref);
+    if (pose) placeRecord(rec, pose);
+  }
+}
+function clearScan() {
+  for (const m of [xr.planes, xr.meshes]) { for (const rec of m.values()) dropRecord(rec); m.clear(); }
+}
+
+/* Menu no pulso (canvas) */
+const MENU_W = 768, COLS = 3, CELL_H = 74, HEAD = 92;
+const menuItems = [
+  ...Object.entries(CATALOG).map(([k, d]) => ({ label: d.label, kind: 'add', act: () => spawnXR(k) })),
+  { label: () => paused ? 'Continuar física' : 'Pausar física', act: togglePause },
+  { label: 'Acionar selecionado', act: () => act(selected) },
+  { label: 'Apagar selecionado', act: () => remove(selected) },
+  { label: 'Voltar posições', act: resetAll },
+  { label: () => xr.showScan ? 'Ocultar scan' : 'Mostrar scan', act: toggleScan },
+  { label: 'Escanear sala', act: () => { if (xr.session?.initiateRoomCapture) xr.session.initiateRoomCapture(); else toast('Este navegador não oferece novo escaneamento'); } },
+  { label: 'Sair', kind: 'exit', act: () => xr.session?.end() },
+];
+const rows = Math.ceil(menuItems.length / COLS);
+const menuCanvas = document.createElement('canvas');
+menuCanvas.width = MENU_W; menuCanvas.height = HEAD + rows * CELL_H + 14;
+const menuCtx = menuCanvas.getContext('2d');
+const menuTex = new THREE.CanvasTexture(menuCanvas); menuTex.colorSpace = THREE.SRGBColorSpace;
+const MENU_SIZE = 0.28;
+const menuMesh = new THREE.Mesh(new THREE.PlaneGeometry(MENU_SIZE, MENU_SIZE * menuCanvas.height / MENU_W), new THREE.MeshBasicMaterial({ map: menuTex, transparent: true }));
+menuMesh.position.set(0, 0.07, -0.11); menuMesh.rotation.x = -Math.PI / 3.2;
+let menuHover = -1, menuFlash = -1;
+function cellRect(i) { const cw = (MENU_W - 24) / COLS; return { x: 12 + (i % COLS) * cw, y: HEAD + Math.floor(i / COLS) * CELL_H, w: cw - 8, h: CELL_H - 8 }; }
+function drawMenu() {
+  const g = menuCtx, H = menuCanvas.height;
+  g.clearRect(0, 0, MENU_W, H);
+  g.fillStyle = 'rgba(20,30,41,0.94)'; g.beginPath(); g.roundRect(0, 0, MENU_W, H, 22); g.fill();
+  g.fillStyle = '#dfe7ee'; g.font = '600 34px "IBM Plex Sans Condensed", sans-serif'; g.textBaseline = 'middle';
+  g.fillText('Loja RM', 22, 34);
+  g.fillStyle = '#8ba0b3'; g.font = '500 22px "IBM Plex Mono", monospace';
+  const sel = selected ? `selecionado: ${selected.def.label}` : 'aponte e aperte o gatilho para pegar';
+  g.fillText(sel + (paused ? ' · física pausada' : ''), 22, 70);
+  menuItems.forEach((it, i) => {
+    const r = cellRect(i);
+    const hot = i === menuHover, flash = i === menuFlash;
+    g.fillStyle = flash ? '#f2a93b' : hot ? '#2a3a4c' : it.kind === 'add' ? '#1a2633' : '#22303f';
+    g.beginPath(); g.roundRect(r.x, r.y, r.w, r.h, 10); g.fill();
+    g.strokeStyle = hot ? '#f2a93b' : '#2a3a4c'; g.lineWidth = 2; g.stroke();
+    g.fillStyle = flash ? '#1b1306' : it.kind === 'exit' ? '#ff8f8a' : '#dfe7ee';
+    g.font = '500 25px "IBM Plex Sans Condensed", sans-serif';
+    const label = typeof it.label === 'function' ? it.label() : it.label;
+    g.fillText((it.kind === 'add' ? '+ ' : '') + label, r.x + 14, r.y + r.h / 2, r.w - 24);
+  });
+  menuTex.needsUpdate = true;
+}
+function menuIndexAt(uv) {
+  const x = uv.x * MENU_W, y = (1 - uv.y) * menuCanvas.height;
+  return menuItems.findIndex((_, i) => { const r = cellRect(i); return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; });
+}
+function toggleScan() {
+  xr.showScan = !xr.showScan;
+  for (const m of [xr.planes, xr.meshes]) for (const rec of m.values()) applyScanVisibility(rec);
+  drawMenu();
+}
+
+/* Controles */
+const tmpM = new THREE.Matrix4(), xrRay = new THREE.Raycaster();
+for (let i = 0; i < 2; i++) {
+  const c = renderer.xr.getController(i), g = renderer.xr.getControllerGrip(i);
+  scene.add(c, g);
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([V(), V(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0xf2a93b, transparent: true, opacity: 0.85 }));
+  line.scale.z = 2; c.add(line);
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 8), new THREE.MeshBasicMaterial({ color: 0xf2a93b }));
+  tip.visible = false; scene.add(tip);
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.11), mat(C.dark)));
+  const st = { c, g, line, tip, src: null, grab: null };
+  c.addEventListener('connected', ev => {
+    st.src = ev.data;
+    if (ev.data.handedness === 'left' || (!xr.menuOwner && ev.data.handedness !== 'right' && i === 0)) attachMenu(st);
+  });
+  c.addEventListener('disconnected', () => { st.src = null; if (xr.menuOwner === st) { st.g.remove(menuMesh); xr.menuOwner = null; } });
+  c.addEventListener('selectstart', () => onSelectStart(st));
+  c.addEventListener('selectend', () => onSelectEnd(st));
+  c.addEventListener('squeezestart', () => { const h = rayHit(st, allMeshes()); if (h) act(h.object.userData.ent); });
+  xr.ctrls.push(st);
+}
+function attachMenu(st) { if (xr.menuOwner) xr.menuOwner.g.remove(menuMesh); st.g.add(menuMesh); xr.menuOwner = st; drawMenu(); }
+function setRay(st) {
+  tmpM.identity().extractRotation(st.c.matrixWorld);
+  xrRay.ray.origin.setFromMatrixPosition(st.c.matrixWorld);
+  xrRay.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
+  return xrRay.ray;
+}
+function rayHit(st, objs) { setRay(st); return xrRay.intersectObjects(objs, false)[0]; }
+
+function onSelectStart(st) {
+  if (xr.menuOwner !== st && menuMesh.parent) {
+    const h = rayHit(st, [menuMesh]);
+    if (h) {
+      const i = menuIndexAt(h.uv);
+      if (i >= 0) { menuFlash = i; menuItems[i].act(); drawMenu(); setTimeout(() => { menuFlash = -1; drawMenu(); }, 160); }
+      return;
+    }
+  }
+  const h = rayHit(st, allMeshes());
+  if (!h) return;
+  const e = h.object.userData.ent;
+  st.grab = {
+    ent: e, dist: h.distance, offset: e.anchor.position.clone().sub(h.point), planeY: h.point.y,
+    yaw: new THREE.Euler().setFromQuaternion(e.anchor.quaternion, 'YXZ').y, q0: e.anchor.quaternion.clone(),
+    vel: V(), last: e.anchor.position.clone(),
+  };
+  e.dragging = true;
+  select(e); drawMenu();
+}
+function onSelectEnd(st) {
+  const g = st.grab; if (!g) return;
+  st.grab = null; g.ent.dragging = false;
+  if (g.ent.def.follow) { const b = g.ent.parts[0].body; b.velocity.set(g.vel.x, g.vel.y, g.vel.z); }
+  g.ent.setHome(); save();
+}
+function updateGrab(st, dt) {
+  const g = st.grab, e = g.ent, ray = setRay(st);
+  const axes = st.src?.gamepad?.axes || [];
+  const sx = axes[2] || 0, sy = axes[3] || 0;
+  if (Math.abs(sx) > 0.25) g.yaw -= sx * 2.2 * dt;
+  const a = e.anchor;
+  if (e.def.follow) {
+    if (Math.abs(sy) > 0.25) g.dist = clamp(g.dist - sy * 1.6 * dt, 0.15, 8);
+    a.position.copy(ray.origin).addScaledVector(ray.direction, g.dist).add(g.offset);
+    if (Math.abs(sx) > 0.25) a.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(Y, -sx * 2.2 * dt));
+  } else {
+    let snapped = false;
+    if (e.def.wall) {
+      const walls = liveSurfaces().filter(s => s.userData.surface === 'wall');
+      const h = xrRay.intersectObjects(walls, false)[0];
+      if (h && h.distance < 10) {
+        const n = (h.object.userData.normal?.clone() || h.face.normal.clone().transformDirection(h.object.matrixWorld)).setY(0).normalize();
+        if (n.dot(V().subVectors(ray.origin, h.point)) < 0) n.negate();
+        a.position.set(h.point.x + n.x * 0.06, a.position.y, h.point.z + n.z * 0.06);
+        a.quaternion.setFromAxisAngle(Y, Math.atan2(n.x, n.z));
+        g.yaw = Math.atan2(n.x, n.z);
+        snapped = true;
+      }
+    }
+    if (!snapped) {
+      const dy = ray.direction.y;
+      if (Math.abs(dy) > 1e-3) {
+        const t = (g.planeY - ray.origin.y) / dy;
+        if (t > 0 && t < 15) {
+          const p = ray.origin.clone().addScaledVector(ray.direction, t);
+          a.position.set(p.x + g.offset.x, a.position.y, p.z + g.offset.z);
+        }
+      }
+      a.quaternion.setFromAxisAngle(Y, g.yaw);
+    }
+  }
+  if (dt > 0) g.vel.lerp(a.position.clone().sub(g.last).divideScalar(dt), 0.5);
+  g.last.copy(a.position);
+  e.applyAnchor();
+  st.line.scale.z = g.dist;
+}
+function updateControllers(dt) {
+  let hover = -1;
+  for (const st of xr.ctrls) {
+    if (!st.src) { st.tip.visible = false; continue; }
+    if (st.grab) { updateGrab(st, dt); st.tip.visible = false; continue; }
+    const isOwner = xr.menuOwner === st;
+    st.line.visible = !isOwner || !menuMesh.parent;
+    const objs = isOwner ? allMeshes() : [menuMesh, ...allMeshes(), ...liveSurfaces()];
+    const h = menuMesh.parent || !isOwner ? rayHit(st, objs.filter(o => o.parent)) : null;
+    if (h) {
+      st.line.scale.z = h.distance; st.tip.visible = true; st.tip.position.copy(h.point);
+      if (h.object === menuMesh) hover = menuIndexAt(h.uv);
+      st.line.material.color.setHex(h.object.userData.ent ? 0x5cc98a : 0xf2a93b);
+    } else { st.line.scale.z = 2; st.tip.visible = false; st.line.material.color.setHex(0xf2a93b); }
+  }
+  if (hover !== menuHover) { menuHover = hover; drawMenu(); }
+}
+function spawnXR(type) {
+  const def = CATALOG[type], cam = renderer.xr.getCamera();
+  const head = cam.getWorldPosition(V()), fwd = cam.getWorldDirection(V()).setY(0).normalize();
+  const yaw = Math.atan2(-fwd.x, -fwd.z);
+  let p = head.clone().addScaledVector(fwd, 1.3);
+  let q = yawQ(yaw);
+  if (def.follow) p.y = head.y - 0.35;
+  else p.y = 0;
+  if (def.wall) {
+    xrRay.ray.origin.copy(head); xrRay.ray.direction.copy(fwd);
+    const walls = liveSurfaces().filter(s => s.userData.surface === 'wall');
+    const h = xrRay.intersectObjects(walls, false)[0];
+    if (h && h.distance < 8) {
+      const n = (h.object.userData.normal?.clone() || h.face.normal.clone().transformDirection(h.object.matrixWorld)).setY(0).normalize();
+      if (n.dot(fwd) > 0) n.negate();
+      p.set(h.point.x + n.x * 0.06, 0, h.point.z + n.z * 0.06); q = yawQ(Math.atan2(n.x, n.z));
+    }
+  }
+  const e = spawn(type, { p: p.toArray(), q });
+  select(e); save(); drawMenu();
+}
+
+async function startXR(mode) {
+  const init = mode === 'immersive-ar'
+    ? { requiredFeatures: ['local-floor'], optionalFeatures: ['plane-detection', 'mesh-detection', 'hand-tracking', 'bounded-floor'] }
+    : { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] };
+  try {
+    const session = await navigator.xr.requestSession(mode, init);
+    renderer.xr.setReferenceSpaceType('local-floor');
+    await renderer.xr.setSession(session);
+    xr.session = session; xr.mode = mode;
+    session.addEventListener('end', onXREnd);
+    select(null);
+    if (mode === 'immersive-ar') {
+      scene.background = null; renderer.setClearColor(0x000000, 0);
+      roomGroup.visible = false; setRoomPhysics(false); shadowCatcher.visible = true;
+    }
+    drawMenu();
+  } catch (err) {
+    toast('Não foi possível iniciar: ' + (err.message || err));
+  }
+}
+function onXREnd() {
+  clearScan();
+  for (const st of xr.ctrls) if (st.grab) onSelectEnd(st);
+  xr.session = null; xr.mode = null;
+  scene.background = BG; roomGroup.visible = true; setRoomPhysics(true); shadowCatcher.visible = false;
+  resize(); renderProps();
+}
+$('#btnAR').onclick = () => startXR('immersive-ar');
+$('#btnVR').onclick = () => startXR('immersive-vr');
+(async () => {
+  const s = $('#xrStatus');
+  if (!navigator.xr) { s.textContent = 'WebXR indisponível nesta página. Abra o link hospedado no navegador do Meta Quest 3 para usar passthrough e o scan da sala. Aqui você monta e testa o layout.'; return; }
+  const [ar, vr] = await Promise.all(['immersive-ar', 'immersive-vr'].map(m => navigator.xr.isSessionSupported(m).catch(() => false)));
+  $('#btnAR').disabled = !ar; $('#btnVR').disabled = !vr;
+  s.textContent = ar ? 'Pronto. Ao entrar, permita o acesso ao espaço para usar paredes, piso e móveis reais. Gatilho pega e solta, grip aciona, analógico gira e aproxima.'
+    : vr ? 'Só VR disponível neste aparelho. A sala virtual continua visível.'
+    : 'Este navegador não tem headset de realidade mista. Aqui você monta e testa o layout; no Quest 3 o botão acende.';
+})();
+
+/* ---------- Loop ---------- */
+const clock = new THREE.Clock();
+const box3 = new THREE.Box3();
+let propsTick = 0;
+renderer.setAnimationLoop((t, frame) => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (frame && xr.mode === 'immersive-ar') {
+    trackScan(frame, frame.detectedPlanes, xr.planes, makePlaneRecord, k => k.planeSpace);
+    trackScan(frame, frame.detectedMeshes, xr.meshes, makeMeshRecord, k => k.meshSpace);
+  }
+  if (renderer.xr.isPresenting) { renderer.xr.getCamera().getWorldPosition(userPos); updateControllers(dt); }
+  else userPos.set(0, -100, 0);
+  if (!paused) world.step(1 / 60, dt, 4);
+  else for (const e of entities) if (e.dragging) e.applyAnchor();
+  for (const e of entities) {
+    if (e.def.follow && !e.dragging) e.followBody();
+    e.sync();
+    e.def.frame?.(e, dt);
+  }
+  if (selected) {
+    box3.makeEmpty(); for (const p of selected.parts) box3.expandByObject(p.group);
+    selBox.box.copy(box3);
+    if ((propsTick += dt) > 0.15) { propsTick = 0; updatePropsLive(); }
+  }
+  if (!renderer.xr.isPresenting) orbit.update();
+  renderer.render(scene, camera);
+});
+
+if (innerWidth < 760) { $('#tools').classList.add('collapsed'); $('#menuToggle').setAttribute('aria-expanded', 'false'); }
+buildRoom();
+const saved = store.get('loja-rm-layout');
+load(saved && saved.items?.length ? saved : sampleLayout());
+document.fonts?.ready.then(drawMenu);
+window.__loja = { entities, world, CATALOG, select, act, spawn };
+</script>
+
+</body>
+</html>
