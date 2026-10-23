@@ -55,7 +55,15 @@ input[type=number] { font-family: var(--font-data); font-size: 13px; width: 100%
 .pill { font-family: var(--font-data); font-size: 11px; padding: 2px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .pill.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
 
-#props { top: 12px; right: max(12px, env(safe-area-inset-right, 0px)); width: 250px; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+#props { top: 12px; right: max(12px, env(safe-area-inset-right, 0px)); width: 250px; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; max-height: calc(100% - 52px); overflow-y: auto; box-sizing: border-box; }
+#props h2 { margin: 4px 0 0; }
+.parts { display: flex; flex-direction: column; gap: 4px; }
+.partRow { display: flex; gap: 4px; align-items: center; }
+.partRow input[type=text] { flex: 1; min-width: 0; font: inherit; font-size: 13px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; }
+.partRow.sel input[type=text] { border-color: var(--accent); }
+.partRow button { padding: 5px 7px; font-size: 12px; }
+select { font: inherit; font-size: 13px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; width: 100%; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
 #props h3 { margin: 0; font-size: 17px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 #props .params { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 #props .meta { font-family: var(--font-data); font-size: 11.5px; color: var(--muted); }
@@ -429,8 +437,8 @@ class Entity {
     this.state.tex?.dispose();
   }
   build() {
-    const { modelId, name, wasDyn } = this.state;
-    this.clearParts(); this.state = { on: this.state.on ?? true, open: this.state.open ?? false, modelId, name, wasDyn };
+    const { modelId, name, wasDyn, ws, wsOpen } = this.state;
+    this.clearParts(); this.state = { on: this.state.on ?? true, open: this.state.open ?? false, modelId, name, wasDyn, ws, wsOpen };
     this.def.build(this, this.params); this.applyAnchor();
   }
   destroy() {
@@ -709,7 +717,7 @@ const CATALOG = {
     build(e, { escala: k, fisica, massa }) {
       const m = models.get(e.state.modelId);
       if (!m) { e.part({ shapes: [{ box: [0.5, 0.5, 0.5], at: [0, 0.25, 0], color: C.red }] }); return; }
-      const vis = m.scene.clone(true);
+      const vis = e.state.ws ? buildWorkshopVisual(e) : m.scene.clone(true);
       vis.scale.setScalar(k); vis.updateMatrixWorld(true);
       const bb = new THREE.Box3().setFromObject(vis), size = bb.getSize(V()), c = bb.getCenter(V());
       const dyn = fisica > 0;
@@ -719,6 +727,7 @@ const CATALOG = {
       e.part({ kind: dyn ? 'dynamic' : 'static', mass: massa, shapes: [{ box, at: [0, dyn ? 0 : box[1] / 2, 0], hidden: true }], visual: vis });
       if (e.state.wasDyn !== undefined && e.state.wasDyn !== dyn) e.anchor.position.y += dyn ? box[1] / 2 : -box[1] / 2;
       e.state.wasDyn = dyn; e.state.size = box;
+      if (e.state.ws) applyWorkshopPose(e);
     },
     status(e) { return models.has(e.state.modelId) ? (e.state.size || []).map(v => v.toFixed(2)).join(' × ') + ' m' : 'arquivo não está neste navegador'; },
   },
@@ -757,6 +766,189 @@ world.addEventListener('preStep', () => {
   }
 });
 
+
+/* ---------- Oficina: separar um modelo em peças, desmontar, montar e ligar ---------- */
+const AX = { x: X, y: Y, z: Z };
+const splitCache = new Map();
+function splitModel(id, cuts) {
+  const key = id + JSON.stringify(cuts);
+  if (splitCache.has(key)) return splitCache.get(key);
+  const root = models.get(id).scene; root.updateMatrixWorld(true);
+  const boxes = cuts.map(c => ({ inv: new THREE.Matrix4().compose(V(...c.p), new THREE.Quaternion(...c.q), V(1, 1, 1)).invert(), h: V(...c.s).multiplyScalar(0.5) }));
+  const n = cuts.length + 1;
+  const bbs = Array.from({ length: n }, () => new THREE.Box3());
+  const meshes = []; root.traverse(o => { if (o.isMesh) meshes.push(o); });
+  const a = V(), b = V(), c = V(), q = V(), l = V();
+  const out = meshes.map(m => {
+    const pos = m.geometry.attributes.position, idx = m.geometry.index?.array;
+    const tris = idx ? idx.length / 3 : pos.count / 3;
+    const lists = Array.from({ length: n }, () => []);
+    for (let t = 0; t < tris; t++) {
+      const i0 = idx ? idx[3 * t] : 3 * t, i1 = idx ? idx[3 * t + 1] : 3 * t + 1, i2 = idx ? idx[3 * t + 2] : 3 * t + 2;
+      a.fromBufferAttribute(pos, i0).applyMatrix4(m.matrixWorld); b.fromBufferAttribute(pos, i1).applyMatrix4(m.matrixWorld); c.fromBufferAttribute(pos, i2).applyMatrix4(m.matrixWorld);
+      q.copy(a).add(b).add(c).divideScalar(3);
+      let part = 0;
+      for (let k = 0; k < boxes.length; k++) {
+        l.copy(q).applyMatrix4(boxes[k].inv);
+        if (Math.abs(l.x) <= boxes[k].h.x && Math.abs(l.y) <= boxes[k].h.y && Math.abs(l.z) <= boxes[k].h.z) { part = k + 1; break; }
+      }
+      lists[part].push(i0, i1, i2);
+      bbs[part].expandByPoint(a).expandByPoint(b).expandByPoint(c);
+    }
+    const geos = lists.map(list => {
+      if (!list.length) return null;
+      const g = new THREE.BufferGeometry();
+      for (const [name, at] of Object.entries(m.geometry.attributes)) g.setAttribute(name, at);
+      g.setIndex(list); g.boundingBox = m.geometry.boundingBox; g.boundingSphere = m.geometry.boundingSphere;
+      if (!g.boundingSphere) { m.geometry.computeBoundingSphere(); g.boundingSphere = m.geometry.boundingSphere; }
+      return g;
+    });
+    return { mesh: m, geos };
+  });
+  const all = new THREE.Box3(); bbs.forEach(bb => { if (!bb.isEmpty()) all.union(bb); });
+  const res = { meshes: out, boxes: bbs, centers: bbs.map(bb => bb.isEmpty() ? all.getCenter(V()) : bb.getCenter(V())), center: all.getCenter(V()), radius: all.getSize(V()).length() / 2 };
+  splitCache.set(key, res);
+  return res;
+}
+function wsPart(e, i) { const ws = e.state.ws; return ws.parts[i] ||= { name: i ? `Peça ${i}` : 'Base' }; }
+function buildWorkshopVisual(e) {
+  const ws = e.state.ws, split = splitModel(e.state.modelId, ws.cuts);
+  const root = new THREE.Group(); e.wsGroups = []; e.wsRoot = root;
+  for (let i = 0; i <= ws.cuts.length; i++) {
+    const g = new THREE.Group(); g.userData.wsPart = i;
+    for (const s of split.meshes) {
+      if (!s.geos[i]) continue;
+      const mesh = new THREE.Mesh(s.geos[i], s.mesh.material);
+      mesh.matrixAutoUpdate = false; mesh.matrix.copy(s.mesh.matrixWorld);
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData.shared = true; mesh.userData.wsPart = i;
+      g.add(mesh);
+    }
+    root.add(g); e.wsGroups.push(g); wsPart(e, i);
+  }
+  return root;
+}
+function explodeVec(e, i) {
+  const ws = e.state.ws, split = splitModel(e.state.modelId, ws.cuts);
+  if (!ws.explode || i === 0) return V();
+  const d = split.centers[i].clone().sub(split.center).setY(0);
+  if (d.lengthSq() < 1e-8) d.set(0, 0, 1);
+  return d.normalize().multiplyScalar(ws.explode * split.radius).add(V(0, ws.explode * split.radius * 0.35, 0));
+}
+const tmpM4 = new THREE.Matrix4(), tmpM4b = new THREE.Matrix4();
+function applyWorkshopPose(e) {
+  const ws = e.state.ws; if (!ws || !e.wsGroups) return;
+  const split = splitModel(e.state.modelId, ws.cuts);
+  e.wsGroups.forEach((g, i) => {
+    const p = wsPart(e, i);
+    g.visible = !p.hidden;
+    if (p.off) { g.position.fromArray(p.off.p); g.quaternion.fromArray(p.off.q); } else { g.position.set(0, 0, 0); g.quaternion.identity(); }
+    g.position.add(explodeVec(e, i));
+    const j = p.joint;
+    if (ws.running && j && j.type !== 'none') {
+      const k = (Math.sin((ws.phase || 0) * j.speed) + 1) / 2, val = j.min + (j.max - j.min) * k, ax = AX[j.axis] || Y;
+      const piv = split.centers[i].clone().add(V(...(j.pivot || [0, 0, 0])).divideScalar(100 * (e.params.escala || 1)));
+      if (j.type === 'hinge') tmpM4.makeTranslation(piv.x, piv.y, piv.z).multiply(tmpM4b.makeRotationAxis(ax, THREE.MathUtils.degToRad(val))).multiply(new THREE.Matrix4().makeTranslation(-piv.x, -piv.y, -piv.z));
+      else { const d = val / (e.params.escala || 1); tmpM4.makeTranslation(ax.x * d, ax.y * d, ax.z * d); }
+      new THREE.Matrix4().compose(g.position, g.quaternion, V(1, 1, 1)).multiply(tmpM4).decompose(g.position, g.quaternion, V());
+    }
+  });
+}
+function openWorkshop(e, on = true) {
+  if (!e || e.type !== 'modelo' || !models.has(e.state.modelId)) { toast('A oficina funciona com modelos 3D importados'); return; }
+  if (on && !e.state.ws) { e.state.ws = { cuts: [], parts: [{ name: 'Base' }], explode: 0 }; e.goHome(); e.build(); }
+  e.state.wsOpen = on; e.state.ws.sel = on ? (e.state.ws.sel ?? 0) : null;
+  if (!on) { stopCut(); e.state.ws.running = false; applyWorkshopPose(e); }
+  if (on && !renderer.xr.isPresenting) {
+    const bb = new THREE.Box3().setFromObject(e.wsRoot);
+    orbit.target.copy(bb.getCenter(V()));
+  }
+  select(e); save(); drawMenu();
+}
+function setPartOff(e, i, g) {
+  const p = wsPart(e, i);
+  const pos = g.position.clone().sub(explodeVec(e, i));
+  p.off = { p: pos.toArray(), q: g.quaternion.toArray() };
+}
+function trySnap(e, i) {
+  const p = wsPart(e, i); if (!p.off) return false;
+  const dist = V(...p.off.p).length() * (e.params.escala || 1);
+  const ang = 2 * Math.acos(Math.min(1, Math.abs(p.off.q[3])));
+  if (dist < 0.06 && ang < THREE.MathUtils.degToRad(20)) { p.off = null; applyWorkshopPose(e); toast(`${p.name} encaixada`); return true; }
+  return false;
+}
+/* Animação de montar / desmontar: uma peça por vez */
+function queueAssembly(e, mount) {
+  const ws = e.state.ws; ws.running = false; ws.explode = 0;
+  const split = splitModel(e.state.modelId, ws.cuts);
+  const idx = ws.parts.map((_, i) => i).filter(i => i > 0 && !ws.parts[i].hidden);
+  if (!mount) idx.reverse();
+  ws.anim = idx.map(i => {
+    let to = null;
+    if (!mount) {
+      const d = split.centers[i].clone().sub(split.center).setY(0); if (d.lengthSq() < 1e-8) d.set(0, 0, 1);
+      const pos = d.normalize().multiplyScalar(split.radius * 1.1).add(V(0, split.radius * 0.15, 0));
+      to = { p: pos.toArray(), q: [0, 0, 0, 1] };
+    }
+    return { i, to, t: 0 };
+  });
+  toast(mount ? 'Montando peça por peça' : 'Desmontando');
+}
+function stepAnim(e, dt) {
+  const ws = e.state.ws, a = ws.anim?.[0]; if (!a) return;
+  const p = wsPart(e, a.i);
+  if (a.t === 0) a.from = p.off ? { p: [...p.off.p], q: [...p.off.q] } : { p: [0, 0, 0], q: [0, 0, 0, 1] };
+  a.t = Math.min(1, a.t + dt / 0.7);
+  const k = a.t * a.t * (3 - 2 * a.t), to = a.to || { p: [0, 0, 0], q: [0, 0, 0, 1] };
+  const pos = V(...a.from.p).lerp(V(...to.p), k), q = new THREE.Quaternion(...a.from.q).slerp(new THREE.Quaternion(...to.q), k);
+  p.off = { p: pos.toArray(), q: q.toArray() };
+  if (a.t >= 1) { if (!a.to) p.off = null; ws.anim.shift(); ws.sel = a.i; if (!ws.anim.length) { save(); renderProps(); } }
+  applyWorkshopPose(e);
+}
+/* Caixa de corte */
+let cutBox = null;
+function startCut(e) {
+  stopCut();
+  const bb = new THREE.Box3().setFromObject(e.wsRoot), size = bb.getSize(V());
+  cutBox = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xf2a93b, transparent: true, opacity: 0.18, depthWrite: false }));
+  cutBox.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: 0xf2a93b })));
+  cutBox.position.copy(bb.getCenter(V())); cutBox.scale.set(size.x * 0.4, size.y * 0.4, size.z * 0.4);
+  scene.add(cutBox);
+  tcTarget = 'cut'; tc.attach(cutBox); tc.setMode('translate'); tc.showX = tc.showY = tc.showZ = true;
+}
+function stopCut() {
+  if (!cutBox) return;
+  scene.remove(cutBox); cutBox = null;
+  if (tcTarget === 'cut') { tcTarget = null; tc.detach(); }
+}
+function applyCut(e) {
+  if (!cutBox) return;
+  e.wsRoot.updateMatrixWorld(true); cutBox.updateMatrixWorld(true);
+  const m = new THREE.Matrix4().copy(e.wsRoot.matrixWorld).invert().multiply(cutBox.matrixWorld);
+  const p = V(), q = new THREE.Quaternion(), sc = V(); m.decompose(p, q, sc);
+  const ws = e.state.ws;
+  const before = ws.cuts.length;
+  ws.cuts.push({ p: p.toArray(), q: q.toArray(), s: sc.toArray().map(Math.abs) });
+  const split = splitModel(e.state.modelId, ws.cuts);
+  if (split.boxes[before + 1].isEmpty()) { ws.cuts.pop(); toast('A caixa não pegou nenhuma parte do modelo'); return; }
+  ws.parts[before + 1] = { name: `Peça ${before + 1}` };
+  ws.sel = before + 1;
+  stopCut(); e.goHome(); e.build(); save(); renderProps();
+  toast(`Peça ${before + 1} separada`);
+}
+function undoCut(e) {
+  const ws = e.state.ws; if (!ws.cuts.length) return;
+  ws.cuts.pop(); ws.parts.length = ws.cuts.length + 1; ws.sel = 0;
+  e.goHome(); e.build(); save(); renderProps();
+}
+function selectPart(e, i) {
+  const ws = e.state.ws; ws.sel = i;
+  if (!renderer.xr.isPresenting && !cutBox) { tcTarget = 'part'; tc.attach(e.wsGroups[i]); tc.setMode(tc.mode === 'scale' ? 'translate' : tc.mode); tc.showX = tc.showY = tc.showZ = true; }
+  renderProps(); drawMenu();
+}
+const partBox = new THREE.Box3Helper(new THREE.Box3(), 0x5cc98a);
+partBox.visible = false; scene.add(partBox);
+
 /* ---------- Criar / salvar ---------- */
 function spawn(type, { p, q, params, state } = {}) {
   const e = new Entity(type, params);
@@ -767,7 +959,7 @@ function spawn(type, { p, q, params, state } = {}) {
   return e;
 }
 function serialize() {
-  return { v: 1, items: entities.map(e => ({ type: e.type, params: e.params, p: e.home.p.map(n => +n.toFixed(3)), q: e.home.q.map(n => +n.toFixed(4)), state: { on: e.state.on, open: e.state.open, modelId: e.state.modelId, name: e.state.name } })) };
+  return { v: 1, items: entities.map(e => ({ type: e.type, params: e.params, p: e.home.p.map(n => +n.toFixed(3)), q: e.home.q.map(n => +n.toFixed(4)), state: { on: e.state.on, open: e.state.open, modelId: e.state.modelId, name: e.state.name, ws: e.state.ws && { cuts: e.state.ws.cuts, parts: e.state.ws.parts, explode: e.state.ws.explode } } })) };
 }
 let saveTimer;
 function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => store.set('loja-rm-layout', serialize()), 300); }
@@ -806,21 +998,36 @@ selBox.visible = false; scene.add(selBox);
 const tc = new TransformControls(camera, renderer.domElement);
 tc.setSize(0.8); tc.setTranslationSnap(0.05); tc.setRotationSnap(THREE.MathUtils.degToRad(15));
 scene.add(tc);
+let tcTarget = null; // null: objeto inteiro · 'part': peça na oficina · 'cut': caixa de corte
 tc.addEventListener('dragging-changed', ev => {
   orbit.enabled = !ev.value;
   if (!selected) return;
+  if (tcTarget === 'part') {
+    if (ev.value) selected.state.ws.running = false;
+    else { trySnap(selected, selected.state.ws.sel); save(); }
+    return;
+  }
+  if (tcTarget === 'cut') return;
   selected.dragging = ev.value;
   if (!ev.value) { selected.setHome(); save(); }
 });
-tc.addEventListener('objectChange', () => selected?.applyAnchor());
+tc.addEventListener('objectChange', () => {
+  if (tcTarget === 'part') setPartOff(selected, selected.state.ws.sel, tc.object);
+  else if (!tcTarget) selected?.applyAnchor();
+});
 function setMode(m) {
+  if (tcTarget) { tc.setMode(m); tc.showX = tc.showY = tc.showZ = true; return; }
   tc.setMode(m);
   tc.showX = tc.showZ = m === 'translate';
   tc.showY = m === 'rotate' || !selected?.def.floor || selected?.follow;
 }
 function select(e) {
-  selected = e;
-  if (e && !renderer.xr.isPresenting) { tc.attach(e.anchor); setMode(tc.mode); } else tc.detach();
+  if (selected && selected !== e && selected.state.wsOpen) { selected.state.wsOpen = false; stopCut(); }
+  selected = e; tcTarget = null;
+  if (e && !renderer.xr.isPresenting) {
+    if (e.state.wsOpen && e.wsGroups) { tcTarget = 'part'; tc.attach(e.wsGroups[e.state.ws.sel || 0]); tc.setMode(tc.mode === 'scale' ? 'translate' : tc.mode); tc.showX = tc.showY = tc.showZ = true; }
+    else { tc.attach(e.anchor); setMode(tc.mode === 'scale' ? 'translate' : tc.mode); }
+  } else tc.detach();
   selBox.visible = !!e;
   renderProps();
 }
@@ -828,6 +1035,7 @@ function select(e) {
 const propsEl = $('#props');
 function renderProps() {
   if (!selected || renderer.xr.isPresenting) { propsEl.hidden = true; return; }
+  if (selected.state.wsOpen) { renderWorkshop(); return; }
   const e = selected, d = e.def;
   propsEl.hidden = false;
   const fields = Object.entries(d.params || {}).map(([k, [, min, max, step, label]]) =>
@@ -836,6 +1044,7 @@ function renderProps() {
     <h3>${esc(e.state.name || d.label)}${d.status ? `<span class="pill" id="propStatus"></span>` : ''}</h3>
     ${fields ? `<div class="params">${fields}</div>` : ''}
     ${d.interact ? `<button class="primary wide" id="ppAct">Acionar (F)</button>` : ''}
+    ${e.type === 'modelo' && models.has(e.state.modelId) ? `<button class="primary wide" id="ppWs">Abrir na oficina${e.state.ws?.cuts.length ? ` · ${e.state.ws.cuts.length + 1} peças` : ''}</button>` : ''}
     <div class="row"><button id="ppMove">Mover</button><button id="ppRot">Girar</button><button id="ppDup">Duplicar</button><button id="ppDel">Apagar</button></div>
     <div class="meta" id="propMeta"></div>`;
   propsEl.querySelectorAll('input[data-k]').forEach(inp => inp.addEventListener('change', () => {
@@ -845,11 +1054,81 @@ function renderProps() {
     e.goHome(); e.build(); e.setHome(); save();
   }));
   $('#ppAct')?.addEventListener('click', () => act(e));
+  $('#ppWs')?.addEventListener('click', () => openWorkshop(e));
   $('#ppMove').onclick = () => setMode('translate');
   $('#ppRot').onclick = () => setMode('rotate');
   $('#ppDup').onclick = () => duplicate(e);
   $('#ppDel').onclick = () => remove(e);
   updatePropsLive();
+}
+function renderWorkshop() {
+  const e = selected, ws = e.state.ws, sel = ws.sel ?? 0, p = wsPart(e, sel), j = p.joint || { type: 'none', axis: 'y', min: 0, max: 0, speed: 2, pivot: [0, 0, 0] };
+  const rows = ws.parts.map((pt, i) => `<div class="partRow${i === sel ? ' sel' : ''}"><button data-pick="${i}" aria-label="Selecionar">${i === sel ? '●' : '○'}</button><input type="text" id="pn-${i}" data-name="${i}" value="${esc(pt.name)}"><button data-hide="${i}">${pt.hidden ? 'Mostrar' : 'Ocultar'}</button></div>`).join('');
+  const unit = j.type === 'hinge' ? '°' : 'm';
+  propsEl.innerHTML = `
+    <h3>Oficina<button id="wsClose">Fechar</button></h3>
+    <div class="meta">${esc(e.state.name || 'Modelo')} · ${ws.parts.length} peça${ws.parts.length > 1 ? 's' : ''}</div>
+    <h2>Peças</h2>
+    <div class="parts">${rows}</div>
+    <div class="row"><button id="wsMove">Mover peça</button><button id="wsRot">Girar peça</button><button id="wsHome">Encaixar</button></div>
+    <h2>Separar peças</h2>
+    ${cutBox ? `<div class="row"><button id="cutMove">Mover</button><button id="cutRot">Girar</button><button id="cutSize">Tamanho</button></div>
+      <div class="row"><button class="primary" id="cutApply">Separar peça</button><button id="cutCancel">Cancelar</button></div>
+      <p class="note">Ajuste a caixa amarela em volta da parte que quer separar. O que estiver dentro vira uma peça nova.</p>`
+      : `<div class="row"><button id="cutNew">Nova caixa de corte</button>${ws.cuts.length ? '<button id="cutUndo">Desfazer corte</button>' : ''}</div>`}
+    <h2>Montagem</h2>
+    <label class="f" for="wsExplode">Vista explodida<input id="wsExplode" type="range" min="0" max="1" step="0.01" value="${ws.explode || 0}"></label>
+    <div class="row"><button id="wsDis">Desmontar</button><button id="wsMount">Montar passo a passo</button></div>
+    <h2>Movimento de ${esc(p.name)}</h2>
+    <div class="params">
+      <label class="f" for="jType">Tipo<select id="jType"><option value="none">Parada</option><option value="hinge">Gira (dobradiça)</option><option value="slider">Desliza (pistão)</option></select></label>
+      <label class="f" for="jAxis">Eixo<select id="jAxis"><option value="x">X (lado)</option><option value="y">Y (cima)</option><option value="z">Z (frente)</option></select></label>
+      <label class="f" for="jMin">De ${unit}<input id="jMin" type="number" step="${j.type === 'hinge' ? 5 : 0.01}" value="${j.min}"></label>
+      <label class="f" for="jMax">Até ${unit}<input id="jMax" type="number" step="${j.type === 'hinge' ? 5 : 0.01}" value="${j.max}"></label>
+      <label class="f" for="jSpeed">Velocidade<input id="jSpeed" type="number" step="0.5" min="0" value="${j.speed}"></label>
+      <label class="f" for="jPx">Pivô x cm<input id="jPx" type="number" step="1" value="${j.pivot[0]}"></label>
+      <label class="f" for="jPy">Pivô y cm<input id="jPy" type="number" step="1" value="${j.pivot[1]}"></label>
+      <label class="f" for="jPz">Pivô z cm<input id="jPz" type="number" step="1" value="${j.pivot[2]}"></label>
+    </div>
+    <button class="primary wide" id="wsRun">${ws.running ? 'Desligar máquina' : 'Ligar máquina'}</button>`;
+  $('#jType').value = j.type; $('#jAxis').value = j.axis;
+  $('#wsClose').onclick = () => openWorkshop(e, false);
+  propsEl.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => selectPart(e, +b.dataset.pick));
+  propsEl.querySelectorAll('[data-hide]').forEach(b => b.onclick = () => { const pt = wsPart(e, +b.dataset.hide); pt.hidden = !pt.hidden; applyWorkshopPose(e); save(); renderProps(); });
+  propsEl.querySelectorAll('[data-name]').forEach(inp => inp.onchange = () => { wsPart(e, +inp.dataset.name).name = inp.value.trim() || `Peça ${inp.dataset.name}`; save(); renderProps(); drawMenu(); });
+  $('#wsMove').onclick = () => setMode('translate');
+  $('#wsRot').onclick = () => setMode('rotate');
+  $('#wsHome').onclick = () => { p.off = null; applyWorkshopPose(e); save(); };
+  $('#cutNew') && ($('#cutNew').onclick = () => { startCut(e); renderProps(); });
+  $('#cutUndo') && ($('#cutUndo').onclick = () => undoCut(e));
+  if (cutBox) {
+    $('#cutMove').onclick = () => tc.setMode('translate');
+    $('#cutRot').onclick = () => tc.setMode('rotate');
+    $('#cutSize').onclick = () => tc.setMode('scale');
+    $('#cutApply').onclick = () => applyCut(e);
+    $('#cutCancel').onclick = () => { stopCut(); selectPart(e, sel); };
+  }
+  $('#wsExplode').oninput = ev => { ws.explode = +ev.target.value; applyWorkshopPose(e); };
+  $('#wsExplode').onchange = () => save();
+  $('#wsDis').onclick = () => queueAssembly(e, false);
+  $('#wsMount').onclick = () => queueAssembly(e, true);
+  const setJ = () => {
+    p.joint = { type: $('#jType').value, axis: $('#jAxis').value, min: +$('#jMin').value || 0, max: +$('#jMax').value || 0, speed: +$('#jSpeed').value || 0, pivot: [+$('#jPx').value || 0, +$('#jPy').value || 0, +$('#jPz').value || 0] };
+    if (p.joint.type !== j.type) {
+      if (p.joint.type === 'hinge') { p.joint.min = 0; p.joint.max = 45; }
+      if (p.joint.type === 'slider') { p.joint.min = 0; p.joint.max = 0.15; }
+      renderProps();
+    }
+    applyWorkshopPose(e); save();
+  };
+  ['jType', 'jAxis', 'jMin', 'jMax', 'jSpeed', 'jPx', 'jPy', 'jPz'].forEach(id => $('#' + id).onchange = setJ);
+  $('#wsRun').onclick = () => toggleRun(e);
+}
+function toggleRun(e) {
+  const ws = e?.state.ws; if (!ws) return;
+  if (!ws.parts.some(p => p.joint && p.joint.type !== 'none')) { toast('Defina o movimento de pelo menos uma peça'); return; }
+  ws.running = !ws.running; ws.phase = 0;
+  applyWorkshopPose(e); renderProps(); drawMenu();
 }
 function updatePropsLive() {
   if (!selected || propsEl.hidden) return;
@@ -913,6 +1192,11 @@ renderer.domElement.addEventListener('pointerup', ev => {
     }
     return;
   }
+  if (selected?.state.wsOpen && !cutBox) {
+    const ph = raycaster.intersectObjects(selected.wsGroups.filter(g => g.visible), true)[0];
+    if (ph) { selectPart(selected, ph.object.userData.wsPart); return; }
+  }
+  if (cutBox) return;
   select(hit ? hit.object.userData.ent : null);
 });
 renderer.domElement.addEventListener('dblclick', ev => { const hit = pickAt(ev); if (hit) act(hit.object.userData.ent); });
@@ -1038,6 +1322,10 @@ const menuItems = [
   { label: () => xr.showScan ? 'Ocultar scan' : 'Mostrar scan', act: toggleScan },
   { label: 'Salvar scan da sala', act: () => toast(snapshotScan() ? 'Scan salvo. No navegador, use Baixar scan' : 'Nada escaneado ainda') },
   { label: 'Escanear sala', act: () => { if (xr.session?.initiateRoomCapture) xr.session.initiateRoomCapture(); else toast('Este navegador não oferece novo escaneamento'); } },
+  { label: () => selected?.state.wsOpen ? 'Fechar oficina' : 'Abrir oficina', act: () => openWorkshop(selected, !selected?.state.wsOpen) },
+  { label: 'Desmontar', act: () => selected?.state.wsOpen ? queueAssembly(selected, false) : toast('Abra a oficina num modelo') },
+  { label: 'Montar', act: () => selected?.state.wsOpen ? queueAssembly(selected, true) : toast('Abra a oficina num modelo') },
+  { label: () => selected?.state.ws?.running ? 'Desligar máquina' : 'Ligar máquina', act: () => toggleRun(selected) },
   { label: 'Sair', kind: 'exit', act: () => xr.session?.end() },
 ];
 const rows = Math.ceil(menuItems.length / COLS);
@@ -1121,6 +1409,15 @@ function onSelectStart(st) {
       return;
     }
   }
+  if (selected?.state.wsOpen && selected.wsGroups) {
+    const ph = rayHit(st, selected.wsGroups.filter(g => g.visible).flatMap(g => g.children));
+    if (ph) {
+      const i = ph.object.userData.wsPart, g = selected.wsGroups[i];
+      selected.state.ws.running = false; selected.state.ws.sel = i;
+      st.grab = { ent: selected, part: i, offset: new THREE.Matrix4().copy(st.c.matrixWorld).invert().multiply(g.matrixWorld), dist: ph.distance };
+      drawMenu(); return;
+    }
+  }
   const h = rayHit(st, allMeshes());
   if (!h) return;
   const e = h.object.userData.ent;
@@ -1134,12 +1431,23 @@ function onSelectStart(st) {
 }
 function onSelectEnd(st) {
   const g = st.grab; if (!g) return;
-  st.grab = null; g.ent.dragging = false;
+  st.grab = null;
+  if (g.part !== undefined) { trySnap(g.ent, g.part); save(); return; }
+  g.ent.dragging = false;
   if (g.ent.follow) { const b = g.ent.parts[0].body; b.velocity.set(g.vel.x, g.vel.y, g.vel.z); }
   g.ent.setHome(); save();
 }
 function updateGrab(st, dt) {
   const g = st.grab, e = g.ent, ray = setRay(st);
+  if (g.part !== undefined) {
+    const grp = e.wsGroups[g.part];
+    grp.parent.updateMatrixWorld(true);
+    const m = new THREE.Matrix4().copy(grp.parent.matrixWorld).invert().multiply(st.c.matrixWorld).multiply(g.offset);
+    m.decompose(grp.position, grp.quaternion, V());
+    setPartOff(e, g.part, grp);
+    st.line.scale.z = g.dist;
+    return;
+  }
   const axes = st.src?.gamepad?.axes || [];
   const sx = axes[2] || 0, sy = axes[3] || 0;
   if (Math.abs(sx) > 0.25) g.yaw -= sx * 2.2 * dt;
@@ -1276,12 +1584,23 @@ renderer.setAnimationLoop((t, frame) => {
   else for (const e of entities) if (e.dragging) e.applyAnchor();
   for (const e of entities) {
     if (e.follow && !e.dragging) e.followBody();
+    if (e.state.ws) {
+      if (e.state.ws.anim?.length) stepAnim(e, dt);
+      else if (e.state.ws.running && !paused) { e.state.ws.phase = (e.state.ws.phase || 0) + dt; applyWorkshopPose(e); }
+    }
     e.sync();
     e.def.frame?.(e, dt);
   }
+  if (!selected) partBox.visible = false;
   if (selected) {
     box3.makeEmpty(); for (const p of selected.parts) box3.expandByObject(p.group);
     selBox.box.copy(box3);
+    const ws = selected.state.ws;
+    partBox.visible = !!(selected.state.wsOpen && selected.wsGroups);
+    if (partBox.visible) {
+      const g = selected.wsGroups[ws.sel || 0]; g.updateMatrixWorld(true);
+      partBox.box.copy(splitModel(selected.state.modelId, ws.cuts).boxes[ws.sel || 0]).applyMatrix4(g.matrixWorld);
+    }
     if ((propsTick += dt) > 0.15) { propsTick = 0; updatePropsLive(); }
   }
   if (!renderer.xr.isPresenting) orbit.update();

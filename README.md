@@ -9,5 +9,6 @@ Planejador da loja em realidade mista para o Meta Quest 3, que também roda no n
 
 - **Modelos 3D reais:** escaneie no iPhone (Scaniverse ou Polycam), exporte em GLB e use *Importar modelo .glb*. O modelo fica guardado no navegador e pode ser fixo ou solto (com física).
 - **Scan da sala:** ao sair da realidade mista no Quest, as superfícies escaneadas ficam salvas e podem ser baixadas como `scan-da-sala.glb`.
+- **Oficina:** selecione um modelo importado e toque em *Abrir na oficina*. Separe peças com caixas de corte, use a vista explodida, desmonte e monte peça por peça (a peça encaixa sozinha perto do lugar) e defina movimentos (gira ou desliza) para *Ligar máquina*. No Quest, abra a oficina pelo menu do pulso e pegue as peças com o gatilho.
 
 Feito com Three.js 0.160 e cannon-es 0.20, num único `index.html`.
