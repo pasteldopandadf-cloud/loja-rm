@@ -128,6 +128,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 70px; background: va
       <section>
         <h2>Modelos 3D reais</h2>
         <button id="btnGlb" class="wide">Importar modelo .glb</button>
+        <button id="btnPrensa" class="wide" style="margin-top:6px">Prensa de pastel montada<small>15 peças, desmonta e liga</small></button>
         <input id="glbInput" type="file" accept=".glb,model/gltf-binary" hidden>
         <p class="note">Escaneie no iPhone com Scaniverse ou Polycam e exporte em GLB. O modelo entra em metros, como os outros objetos.</p>
       </section>
@@ -345,7 +346,11 @@ const models = new Map(); // id -> { name, scene }
 async function parseModel(id, buf, name) {
   const g = await gltfLoader.parseAsync(buf, '');
   g.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; o.userData.shared = true; } });
-  models.set(id, { name, scene: g.scene });
+  // Arquivos com peças nomeadas (extras partName) já chegam desmontáveis
+  let root = g.scene;
+  while (root.children.length === 1 && !root.children[0].userData.partName && !root.children[0].isMesh) root = root.children[0];
+  const nodeParts = root.children.some(c => c.userData.partName) ? root.children : null;
+  models.set(id, { name, scene: g.scene, nodeParts });
   return models.get(id);
 }
 async function ensureModels(items = []) {
@@ -810,10 +815,35 @@ function splitModel(id, cuts) {
   splitCache.set(key, res);
   return res;
 }
+const nodeInfoCache = new Map();
+function partInfo(e) {
+  const m = models.get(e.state.modelId);
+  if (!m.nodeParts) return splitModel(e.state.modelId, e.state.ws.cuts);
+  if (nodeInfoCache.has(e.state.modelId)) return nodeInfoCache.get(e.state.modelId);
+  m.scene.updateMatrixWorld(true);
+  const boxes = m.nodeParts.map(c => new THREE.Box3().setFromObject(c));
+  const all = new THREE.Box3(); boxes.forEach(b => all.union(b));
+  const res = { boxes, centers: boxes.map(b => b.getCenter(V())), center: all.getCenter(V()), radius: all.getSize(V()).length() / 2 };
+  nodeInfoCache.set(e.state.modelId, res);
+  return res;
+}
 function wsPart(e, i) { const ws = e.state.ws; return ws.parts[i] ||= { name: i ? `Peça ${i}` : 'Base' }; }
 function buildWorkshopVisual(e) {
-  const ws = e.state.ws, split = splitModel(e.state.modelId, ws.cuts);
+  const ws = e.state.ws, model = models.get(e.state.modelId);
   const root = new THREE.Group(); e.wsGroups = []; e.wsRoot = root;
+  if (model.nodeParts) {
+    model.scene.updateMatrixWorld(true);
+    model.nodeParts.forEach((c, i) => {
+      const g = new THREE.Group(); g.userData.wsPart = i;
+      const k = c.clone(true);
+      k.matrixAutoUpdate = false; k.matrix.copy(c.matrixWorld);
+      k.traverse(o => { if (o.isMesh) { o.userData.shared = true; o.userData.wsPart = i; o.castShadow = o.receiveShadow = true; } });
+      g.add(k); root.add(g); e.wsGroups.push(g);
+      const p = wsPart(e, i); if (!p.name || /^Peça \d+$|^Base$/.test(p.name)) p.name = c.userData.partName || p.name;
+    });
+    return root;
+  }
+  const split = splitModel(e.state.modelId, ws.cuts);
   for (let i = 0; i <= ws.cuts.length; i++) {
     const g = new THREE.Group(); g.userData.wsPart = i;
     for (const s of split.meshes) {
@@ -829,7 +859,7 @@ function buildWorkshopVisual(e) {
   return root;
 }
 function explodeVec(e, i) {
-  const ws = e.state.ws, split = splitModel(e.state.modelId, ws.cuts);
+  const ws = e.state.ws, split = partInfo(e);
   if (!ws.explode || i === 0) return V();
   const d = split.centers[i].clone().sub(split.center).setY(0);
   if (d.lengthSq() < 1e-8) d.set(0, 0, 1);
@@ -838,7 +868,7 @@ function explodeVec(e, i) {
 const tmpM4 = new THREE.Matrix4(), tmpM4b = new THREE.Matrix4();
 function applyWorkshopPose(e) {
   const ws = e.state.ws; if (!ws || !e.wsGroups) return;
-  const split = splitModel(e.state.modelId, ws.cuts);
+  const split = partInfo(e);
   e.wsGroups.forEach((g, i) => {
     const p = wsPart(e, i);
     g.visible = !p.hidden;
@@ -848,7 +878,8 @@ function applyWorkshopPose(e) {
     if (ws.running && j && j.type !== 'none') {
       const k = (Math.sin((ws.phase || 0) * j.speed) + 1) / 2, val = j.min + (j.max - j.min) * k, ax = AX[j.axis] || Y;
       const piv = split.centers[i].clone().add(V(...(j.pivot || [0, 0, 0])).divideScalar(100 * (e.params.escala || 1)));
-      if (j.type === 'hinge') tmpM4.makeTranslation(piv.x, piv.y, piv.z).multiply(tmpM4b.makeRotationAxis(ax, THREE.MathUtils.degToRad(val))).multiply(new THREE.Matrix4().makeTranslation(-piv.x, -piv.y, -piv.z));
+      if (j.type === 'spin') { const ang = (ws.phase || 0) * j.speed * Math.PI / 30; tmpM4.makeTranslation(piv.x, piv.y, piv.z).multiply(tmpM4b.makeRotationAxis(ax, ang)).multiply(new THREE.Matrix4().makeTranslation(-piv.x, -piv.y, -piv.z)); }
+      else if (j.type === 'hinge') tmpM4.makeTranslation(piv.x, piv.y, piv.z).multiply(tmpM4b.makeRotationAxis(ax, THREE.MathUtils.degToRad(val))).multiply(new THREE.Matrix4().makeTranslation(-piv.x, -piv.y, -piv.z));
       else { const d = val / (e.params.escala || 1); tmpM4.makeTranslation(ax.x * d, ax.y * d, ax.z * d); }
       new THREE.Matrix4().compose(g.position, g.quaternion, V(1, 1, 1)).multiply(tmpM4).decompose(g.position, g.quaternion, V());
     }
@@ -856,12 +887,17 @@ function applyWorkshopPose(e) {
 }
 function openWorkshop(e, on = true) {
   if (!e || e.type !== 'modelo' || !models.has(e.state.modelId)) { toast('A oficina funciona com modelos 3D importados'); return; }
-  if (on && !e.state.ws) { e.state.ws = { cuts: [], parts: [{ name: 'Base' }], explode: 0 }; e.goHome(); e.build(); }
+  if (on && !e.state.ws) {
+    const np = models.get(e.state.modelId).nodeParts;
+    const parts = np ? np.map(c => ({ name: c.userData.partName || c.name, ...(c.userData.joint ? { joint: { pivot: [0, 0, 0], ...c.userData.joint } } : {}) })) : [{ name: 'Base' }];
+    e.state.ws = { cuts: [], parts, explode: 0 }; e.goHome(); e.build();
+  }
   e.state.wsOpen = on; e.state.ws.sel = on ? (e.state.ws.sel ?? 0) : null;
-  if (!on) { stopCut(); e.state.ws.running = false; applyWorkshopPose(e); }
+  if (!on) { stopCut(); e.state.ws.running = false; orbit.autoRotate = false; applyWorkshopPose(e); }
   if (on && !renderer.xr.isPresenting) {
-    const bb = new THREE.Box3().setFromObject(e.wsRoot);
-    orbit.target.copy(bb.getCenter(V()));
+    const bb = new THREE.Box3().setFromObject(e.wsRoot), c = bb.getCenter(V()), r = bb.getSize(V()).length();
+    orbit.target.copy(c);
+    camera.position.copy(c).add(V(1.1, 0.8, 1.5).normalize().multiplyScalar(Math.max(r * 1.5, 1.2)));
   }
   select(e); save(); drawMenu();
 }
@@ -880,7 +916,7 @@ function trySnap(e, i) {
 /* Animação de montar / desmontar: uma peça por vez */
 function queueAssembly(e, mount) {
   const ws = e.state.ws; ws.running = false; ws.explode = 0;
-  const split = splitModel(e.state.modelId, ws.cuts);
+  const split = partInfo(e);
   const idx = ws.parts.map((_, i) => i).filter(i => i > 0 && !ws.parts[i].hidden);
   if (!mount) idx.reverse();
   ws.anim = idx.map(i => {
@@ -1035,7 +1071,7 @@ function select(e) {
 const propsEl = $('#props');
 function renderProps() {
   if (!selected || renderer.xr.isPresenting) { propsEl.hidden = true; return; }
-  if (selected.state.wsOpen) { renderWorkshop(); return; }
+  if (selected.state.wsOpen) { propsEl.hidden = false; renderWorkshop(); return; }
   const e = selected, d = e.def;
   propsEl.hidden = false;
   const fields = Object.entries(d.params || {}).map(([k, [, min, max, step, label]]) =>
@@ -1064,28 +1100,30 @@ function renderProps() {
 function renderWorkshop() {
   const e = selected, ws = e.state.ws, sel = ws.sel ?? 0, p = wsPart(e, sel), j = p.joint || { type: 'none', axis: 'y', min: 0, max: 0, speed: 2, pivot: [0, 0, 0] };
   const rows = ws.parts.map((pt, i) => `<div class="partRow${i === sel ? ' sel' : ''}"><button data-pick="${i}" aria-label="Selecionar">${i === sel ? '●' : '○'}</button><input type="text" id="pn-${i}" data-name="${i}" value="${esc(pt.name)}"><button data-hide="${i}">${pt.hidden ? 'Mostrar' : 'Ocultar'}</button></div>`).join('');
-  const unit = j.type === 'hinge' ? '°' : 'm';
+  const unit = j.type === 'hinge' ? '°' : j.type === 'spin' ? '(não usa)' : 'm';
+  const nodeModel = !!models.get(e.state.modelId).nodeParts;
   propsEl.innerHTML = `
     <h3>Oficina<button id="wsClose">Fechar</button></h3>
     <div class="meta">${esc(e.state.name || 'Modelo')} · ${ws.parts.length} peça${ws.parts.length > 1 ? 's' : ''}</div>
     <h2>Peças</h2>
     <div class="parts">${rows}</div>
     <div class="row"><button id="wsMove">Mover peça</button><button id="wsRot">Girar peça</button><button id="wsHome">Encaixar</button></div>
-    <h2>Separar peças</h2>
+    ${nodeModel ? '' : `<h2>Separar peças</h2>
     ${cutBox ? `<div class="row"><button id="cutMove">Mover</button><button id="cutRot">Girar</button><button id="cutSize">Tamanho</button></div>
       <div class="row"><button class="primary" id="cutApply">Separar peça</button><button id="cutCancel">Cancelar</button></div>
       <p class="note">Ajuste a caixa amarela em volta da parte que quer separar. O que estiver dentro vira uma peça nova.</p>`
-      : `<div class="row"><button id="cutNew">Nova caixa de corte</button>${ws.cuts.length ? '<button id="cutUndo">Desfazer corte</button>' : ''}</div>`}
+      : `<div class="row"><button id="cutNew">Nova caixa de corte</button>${ws.cuts.length ? '<button id="cutUndo">Desfazer corte</button>' : ''}</div>`}`}
     <h2>Montagem</h2>
     <label class="f" for="wsExplode">Vista explodida<input id="wsExplode" type="range" min="0" max="1" step="0.01" value="${ws.explode || 0}"></label>
     <div class="row"><button id="wsDis">Desmontar</button><button id="wsMount">Montar passo a passo</button></div>
+    <button class="wide" id="ws360">${orbit.autoRotate ? 'Parar giro 360°' : 'Girar 360°'}</button>
     <h2>Movimento de ${esc(p.name)}</h2>
     <div class="params">
-      <label class="f" for="jType">Tipo<select id="jType"><option value="none">Parada</option><option value="hinge">Gira (dobradiça)</option><option value="slider">Desliza (pistão)</option></select></label>
+      <label class="f" for="jType">Tipo<select id="jType"><option value="none">Parada</option><option value="hinge">Gira (dobradiça)</option><option value="slider">Desliza (pistão)</option><option value="spin">Gira sem parar (rolo)</option></select></label>
       <label class="f" for="jAxis">Eixo<select id="jAxis"><option value="x">X (lado)</option><option value="y">Y (cima)</option><option value="z">Z (frente)</option></select></label>
       <label class="f" for="jMin">De ${unit}<input id="jMin" type="number" step="${j.type === 'hinge' ? 5 : 0.01}" value="${j.min}"></label>
       <label class="f" for="jMax">Até ${unit}<input id="jMax" type="number" step="${j.type === 'hinge' ? 5 : 0.01}" value="${j.max}"></label>
-      <label class="f" for="jSpeed">Velocidade<input id="jSpeed" type="number" step="0.5" min="0" value="${j.speed}"></label>
+      <label class="f" for="jSpeed">${j.type === 'spin' ? 'Rotação rpm' : 'Velocidade'}<input id="jSpeed" type="number" step="0.5" min="0" value="${j.speed}"></label>
       <label class="f" for="jPx">Pivô x cm<input id="jPx" type="number" step="1" value="${j.pivot[0]}"></label>
       <label class="f" for="jPy">Pivô y cm<input id="jPy" type="number" step="1" value="${j.pivot[1]}"></label>
       <label class="f" for="jPz">Pivô z cm<input id="jPz" type="number" step="1" value="${j.pivot[2]}"></label>
@@ -1111,12 +1149,18 @@ function renderWorkshop() {
   $('#wsExplode').oninput = ev => { ws.explode = +ev.target.value; applyWorkshopPose(e); };
   $('#wsExplode').onchange = () => save();
   $('#wsDis').onclick = () => queueAssembly(e, false);
+  $('#ws360').onclick = () => {
+    orbit.autoRotate = !orbit.autoRotate; orbit.autoRotateSpeed = 3;
+    if (orbit.autoRotate) orbit.target.copy(new THREE.Box3().setFromObject(e.wsRoot).getCenter(V()));
+    renderProps();
+  };
   $('#wsMount').onclick = () => queueAssembly(e, true);
   const setJ = () => {
     p.joint = { type: $('#jType').value, axis: $('#jAxis').value, min: +$('#jMin').value || 0, max: +$('#jMax').value || 0, speed: +$('#jSpeed').value || 0, pivot: [+$('#jPx').value || 0, +$('#jPy').value || 0, +$('#jPz').value || 0] };
     if (p.joint.type !== j.type) {
       if (p.joint.type === 'hinge') { p.joint.min = 0; p.joint.max = 45; }
       if (p.joint.type === 'slider') { p.joint.min = 0; p.joint.max = 0.15; }
+      if (p.joint.type === 'spin') { p.joint.speed = 40; }
       renderProps();
     }
     applyWorkshopPose(e); save();
@@ -1599,7 +1643,7 @@ renderer.setAnimationLoop((t, frame) => {
     partBox.visible = !!(selected.state.wsOpen && selected.wsGroups);
     if (partBox.visible) {
       const g = selected.wsGroups[ws.sel || 0]; g.updateMatrixWorld(true);
-      partBox.box.copy(splitModel(selected.state.modelId, ws.cuts).boxes[ws.sel || 0]).applyMatrix4(g.matrixWorld);
+      partBox.box.copy(partInfo(selected).boxes[ws.sel || 0]).applyMatrix4(g.matrixWorld);
     }
     if ((propsTick += dt) > 0.15) { propsTick = 0; updatePropsLive(); }
   }
@@ -1608,6 +1652,118 @@ renderer.setAnimationLoop((t, frame) => {
 });
 
 if (innerWidth < 760) { $('#tools').classList.add('collapsed'); $('#menuToggle').setAttribute('aria-expanded', 'false'); }
+/* ---------- Prensa de pastel (laminadora) modelada a partir das fotos ----------
+   Eixo X: do gabinete (-X) para a mesa de saída (+X). Medidas em metros, estimadas pelas fotos. */
+function buildPrensaParts() {
+  const M = (color, r = 0.6, m = 0) => new THREE.MeshStandardMaterial({ color, roughness: r, metalness: m });
+  const pead = M(0xf1f1ec, 0.45), inox = M(0xc4cad0, 0.28, 0.85), azul = M(0x4aa6d4, 0.55, 0.25), bege = M(0xd9d6c4, 0.55, 0.1),
+    preto = M(0x1c1e21, 0.7), laranja = M(0xff7a1a, 0.5), vermelho = M(0xd8231f, 0.35), verde = M(0x2fbf71, 0.35),
+    nylon = M(0xf8f8f3, 0.3), motor = M(0x58626e, 0.45, 0.45), parafuso = M(0x6d737a, 0.4, 0.8);
+  const parts = [];
+  const part = (name, joint) => { const g = new THREE.Group(); g.name = name; g.userData.partName = name; if (joint) g.userData.joint = joint; parts.push(g); return g; };
+  const box = (g, mat, sx, sy, sz, x, y, z, rx = 0, ry = 0, rz = 0) => { const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz); g.add(m); return m; };
+  const cyl = (g, mat, r, h, x, y, z, axis = 'y', seg = 32) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg), mat); m.position.set(x, y, z); if (axis === 'z') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.z = Math.PI / 2; g.add(m); return m; };
+  const screwsZ = (g, xs, ys, z) => { for (const x of xs) for (const y of ys) cyl(g, parafuso, 0.006, 0.004, x, y, z, 'z', 10); };
+  const star = (g, x, y, z) => {
+    const sh = new THREE.Shape();
+    for (let i = 0; i <= 90; i++) { const a = i / 90 * Math.PI * 2, r = 0.05 + 0.007 * Math.cos(a * 9); i ? sh.lineTo(Math.cos(a) * r, Math.sin(a) * r) : sh.moveTo(r, 0); }
+    const m = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: 0.006, bevelEnabled: false }), inox);
+    m.rotation.x = -Math.PI / 2; m.position.set(x, y, z); g.add(m);
+    cyl(g, inox, 0.009, 0.03, x, y - 0.012, z, 'y', 12);
+  };
+
+  // 0 Gabinete de polietileno sobre o qual tudo é montado
+  const gab = part('Gabinete');
+  for (const z of [-0.2125, 0.2125]) { box(gab, pead, 0.62, 0.62, 0.015, -0.49, 0.39, z); screwsZ(gab, [-0.76, -0.62, -0.46, -0.3], [0.2, 0.62], z + Math.sign(z) * 0.009); }
+  box(gab, pead, 0.015, 0.62, 0.42, -0.7925, 0.39, 0);
+  box(gab, pead, 0.015, 0.62, 0.42, -0.1875, 0.39, 0);
+  box(gab, pead, 0.62, 0.015, 0.42, -0.49, 0.0875, 0);
+  for (const z of [-0.221, 0.221]) box(gab, M(0xcfcfc9), 0.6, 0.004, 0.002, -0.49, 0.22, z);
+  // 1 Estrutura azul que segura os rolos
+  const est = part('Estrutura azul');
+  for (const z of [-0.215, 0.215]) { box(est, azul, 0.2, 0.74, 0.022, -0.08, 0.45, z); box(est, azul, 0.04, 0.04, 0.022, -0.17, 0.05, z); box(est, azul, 0.04, 0.04, 0.022, 0.01, 0.05, z); }
+  box(est, azul, 0.2, 0.04, 0.43, -0.08, 0.1, 0);
+  box(est, azul, 0.04, 0.04, 0.43, -0.17, 0.33, 0);
+  box(est, azul, 0.16, 0.18, 0.01, -0.08, 0.25, 0.075);
+  for (const dx of [-0.05, 0.05]) for (const dy of [-0.06, 0, 0.06]) box(est, preto, 0.012, 0.028, 0.012, -0.08 + dx, 0.25 + dy, 0.075);
+  // 2 Rodízios e pés de nylon
+  const pes = part('Rodízios e pés');
+  for (const z of [-0.17, 0.17]) { cyl(pes, laranja, 0.035, 0.025, -0.74, 0.035, z, 'z', 24); box(pes, preto, 0.05, 0.03, 0.04, -0.74, 0.075, z); }
+  for (const x of [-0.17, 0.01]) for (const z of [-0.215, 0.215]) { cyl(pes, nylon, 0.026, 0.055, x, 0.0275, z, 'y', 20); cyl(pes, inox, 0.007, 0.03, x, 0.06, z, 'y', 10); }
+  // 3 Motor
+  const mot = part('Motor');
+  cyl(mot, motor, 0.075, 0.2, -0.08, 0.25, -0.02, 'z', 28);
+  cyl(mot, motor, 0.06, 0.02, -0.08, 0.25, -0.13, 'z', 28);
+  cyl(mot, inox, 0.01, 0.06, -0.08, 0.25, -0.15, 'z', 12);
+  // 4 Polia e correia
+  const pol = part('Polia e correia', { type: 'spin', axis: 'z', speed: 120, min: 0, max: 0 });
+  cyl(pol, preto, 0.05, 0.03, -0.08, 0.25, -0.17, 'z', 28);
+  box(pol, preto, 0.008, 0.012, 0.03, -0.08, 0.3, -0.17);
+  const cor = part('Correia');
+  for (const dx of [-0.05, 0.05]) box(cor, preto, 0.012, 0.3, 0.018, -0.08 + dx, 0.4, -0.235);
+  // 5 e 6 Rolos de nylon com eixo e discos de inox
+  const rolo = (name, y, rpm) => {
+    const g = part(name, { type: 'spin', axis: 'z', speed: rpm, min: 0, max: 0 });
+    cyl(g, nylon, 0.06, 0.38, -0.08, y, 0, 'z', 40);
+    cyl(g, inox, 0.012, 0.5, -0.08, y, 0, 'z', 12);
+    for (const z of [-0.196, 0.196]) cyl(g, inox, 0.074, 0.006, -0.08, y, z, 'z', 36);
+    box(g, M(0xd6d6cf), 0.004, 0.004, 0.38, -0.08, y + 0.0595, 0);
+    return g;
+  };
+  rolo('Rolo inferior', 0.55, 40);
+  rolo('Rolo superior', 0.68, -40);
+  // 7 Haste de inox sobre o rolo
+  const has = part('Haste');
+  cyl(has, inox, 0.008, 0.46, 0.0, 0.765, 0, 'z', 12);
+  // 8 Barra de ajuste com os dois manípulos estrela
+  const bar = part('Barra de ajuste e manípulos');
+  box(bar, azul, 0.04, 0.04, 0.4, -0.16, 0.775, 0);
+  star(bar, -0.16, 0.81, -0.11); star(bar, -0.16, 0.81, 0.11);
+  // 9 Bandeja de alimentação (funil)
+  const ban = part('Bandeja de alimentação');
+  box(ban, pead, 0.6, 0.012, 0.4, -0.49, 0.706, 0);
+  box(ban, pead, 0.02, 0.15, 0.42, -0.79, 0.785, 0);
+  for (const z of [-0.2, 0.2]) box(ban, pead, 0.62, 0.15, 0.02, -0.49, 0.785, z);
+  box(ban, inox, 0.11, 0.004, 0.36, -0.15, 0.68, 0, 0, 0, -0.55);
+  // 10 Raspador de inox com alça de arame
+  const ras = part('Raspador', { type: 'slider', axis: 'y', min: 0, max: 0.04, speed: 3 });
+  box(ras, inox, 0.012, 0.13, 0.34, -0.205, 0.79, 0, 0, 0, 0.35);
+  box(ras, azul, 0.004, 0.1, 0.3, -0.198, 0.79, 0, 0, 0, 0.35);
+  for (const z of [-0.12, 0.12]) cyl(ras, inox, 0.004, 0.1, -0.3, 0.86, z, 'x', 8);
+  for (const x of [-0.25, -0.35]) cyl(ras, inox, 0.004, 0.24, x, 0.86, 0, 'z', 8);
+  // 11 Quadro elétrico com botões
+  const qua = part('Quadro elétrico');
+  box(qua, bege, 0.22, 0.32, 0.15, -0.1, 0.64, 0.31);
+  box(qua, inox, 0.06, 0.02, 0.1, -0.1, 0.48, 0.26);
+  cyl(qua, vermelho, 0.024, 0.02, -0.17, 0.815, 0.31, 'y', 24); cyl(qua, preto, 0.016, 0.012, -0.17, 0.806, 0.31, 'y', 16);
+  cyl(qua, verde, 0.016, 0.012, -0.1, 0.806, 0.31, 'y', 20); cyl(qua, inox, 0.019, 0.004, -0.1, 0.801, 0.31, 'y', 20);
+  cyl(qua, preto, 0.018, 0.014, -0.03, 0.807, 0.31, 'y', 20); box(qua, preto, 0.03, 0.01, 0.008, -0.03, 0.818, 0.31);
+  // 12 Porta do quadro (abre na dobradiça)
+  const por = part('Porta do quadro', { type: 'hinge', axis: 'y', min: 0, max: 100, speed: 0.8, pivot: [11, 0, 0] });
+  box(por, bege, 0.22, 0.31, 0.012, -0.1, 0.64, 0.391);
+  cyl(por, preto, 0.01, 0.006, -0.17, 0.64, 0.399, 'z', 16);
+  for (const y of [0.55, 0.73]) box(por, inox, 0.02, 0.04, 0.012, 0.005, y, 0.392);
+  // 13 Mesa de saída com pés de inox
+  const mes = part('Mesa de saída');
+  box(mes, pead, 0.85, 0.015, 0.4, 0.445, 0.5, 0);
+  for (const z of [-0.18, 0.18]) { box(mes, inox, 0.85, 0.02, 0.02, 0.445, 0.483, z); cyl(mes, inox, 0.012, 0.47, 0.83, 0.24, z * 0.95, 'y', 12); cyl(mes, vermelho, 0.014, 0.012, 0.83, 0.006, z * 0.95, 'y', 12); }
+  for (const x of [0.06, 0.3, 0.55, 0.8]) for (const z of [-0.185, 0.185]) cyl(mes, parafuso, 0.006, 0.004, x, 0.509, z, 'y', 10);
+  parts.forEach(g => g.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = true; }));
+  return parts;
+}
+$('#btnPrensa').onclick = async () => {
+  try {
+    const id = 'prensa-pecas-v1', name = 'Prensa de pastel';
+    let rec = await idb.get('model:' + id);
+    if (!rec) { const buf = await exportGlb(buildPrensaParts()); rec = { buf, name }; await idb.put('model:' + id, rec); }
+    if (!models.has(id)) await parseModel(id, rec.buf, name);
+    const t = orbit.target;
+    const e = spawn('modelo', { p: [t.x, 0, t.z], state: { modelId: id, name } });
+    save(); openWorkshop(e);
+    toast('Prensa montada. Use Desmontar, Montar e Ligar máquina');
+  } catch (err) { toast('Não consegui montar a prensa: ' + (err.message || err)); }
+};
+
 /* ---------- Modelos importados e scan da sala ---------- */
 $('#btnGlb').onclick = () => $('#glbInput').click();
 $('#glbInput').addEventListener('change', async ev => {
@@ -1676,7 +1832,7 @@ buildRoom();
   loadSavedScan();
 })();
 document.fonts?.ready.then(drawMenu);
-window.__loja = { entities, world, CATALOG, select, act, spawn, xr, snapshotScan, makePlaneRecord };
+window.__loja = { entities, world, CATALOG, select, act, spawn, xr, snapshotScan, makePlaneRecord, buildPrensaParts, exportGlb };
 </script>
 
 </body>
