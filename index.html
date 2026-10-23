@@ -128,7 +128,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 70px; background: va
       <section>
         <h2>Modelos 3D reais</h2>
         <button id="btnGlb" class="wide">Importar modelo .glb</button>
-        <button id="btnPrensa" class="wide" style="margin-top:6px">Prensa de pastel montada<small>15 peças, desmonta e liga</small></button>
+        <button id="btnPrensa" class="wide" style="margin-top:6px">Prensa de pastel montada<small>desmonta, monta e liga</small></button>
         <input id="glbInput" type="file" accept=".glb,model/gltf-binary" hidden>
         <p class="note">Escaneie no iPhone com Scaniverse ou Polycam e exporte em GLB. O modelo entra em metros, como os outros objetos.</p>
       </section>
@@ -871,7 +871,7 @@ function applyWorkshopPose(e) {
   const split = partInfo(e);
   e.wsGroups.forEach((g, i) => {
     const p = wsPart(e, i);
-    g.visible = !p.hidden;
+    g.visible = !p.hidden && (p.name !== 'Massa' || !!ws.running);
     if (p.off) { g.position.fromArray(p.off.p); g.quaternion.fromArray(p.off.q); } else { g.position.set(0, 0, 0); g.quaternion.identity(); }
     g.position.add(explodeVec(e, i));
     const j = p.joint;
@@ -1630,7 +1630,10 @@ renderer.setAnimationLoop((t, frame) => {
     if (e.follow && !e.dragging) e.followBody();
     if (e.state.ws) {
       if (e.state.ws.anim?.length) stepAnim(e, dt);
-      else if (e.state.ws.running && !paused) { e.state.ws.phase = (e.state.ws.phase || 0) + dt; applyWorkshopPose(e); }
+      else if (e.state.ws.running && !paused) {
+        e.state.ws.phase = (e.state.ws.phase || 0) + dt; applyWorkshopPose(e);
+        e.wsRoot?.traverse(o => { if (o.material?.name === 'massa' && o.material.map) o.material.map.offset.x -= dt * 0.6; });
+      }
     }
     e.sync();
     e.def.frame?.(e, dt);
@@ -1748,12 +1751,21 @@ function buildPrensaParts() {
   box(mes, pead, 0.85, 0.015, 0.4, 0.445, 0.5, 0);
   for (const z of [-0.18, 0.18]) { box(mes, inox, 0.85, 0.02, 0.02, 0.445, 0.483, z); cyl(mes, inox, 0.012, 0.47, 0.83, 0.24, z * 0.95, 'y', 12); cyl(mes, vermelho, 0.014, 0.012, 0.83, 0.006, z * 0.95, 'y', 12); }
   for (const x of [0.06, 0.3, 0.55, 0.8]) for (const z of [-0.185, 0.185]) cyl(mes, parafuso, 0.006, 0.004, x, 0.509, z, 'y', 10);
+  // 14 Massa: aparece só com a máquina ligada, saindo entre os rolos para a mesa (como no vídeo)
+  const mas = part('Massa');
+  const cv2 = document.createElement('canvas'); cv2.width = 64; cv2.height = 64;
+  const g2 = cv2.getContext('2d'); g2.fillStyle = '#e9cf86'; g2.fillRect(0, 0, 64, 64); g2.fillStyle = '#dcbd6e'; g2.fillRect(0, 0, 10, 64);
+  const tex = new THREE.CanvasTexture(cv2); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(6, 1); tex.colorSpace = THREE.SRGBColorSpace;
+  const massaMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85 }); massaMat.name = 'massa';
+  box(mas, massaMat, 0.73, 0.004, 0.33, 0.385, 0.51, 0);
+  box(mas, massaMat, 0.14, 0.004, 0.33, -0.03, 0.56, 0, 0, 0, -0.75);
+  box(mas, M(0xe6c879, 0.9), 0.24, 0.05, 0.3, -0.36, 0.74, 0);
   parts.forEach(g => g.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = true; }));
   return parts;
 }
 $('#btnPrensa').onclick = async () => {
   try {
-    const id = 'prensa-pecas-v1', name = 'Prensa de pastel';
+    const id = 'prensa-pecas-v2', name = 'Prensa de pastel';
     let rec = await idb.get('model:' + id);
     if (!rec) { const buf = await exportGlb(buildPrensaParts()); rec = { buf, name }; await idb.put('model:' + id, rec); }
     if (!models.has(id)) await parseModel(id, rec.buf, name);
