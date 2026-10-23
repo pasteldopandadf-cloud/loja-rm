@@ -118,6 +118,23 @@ textarea { width: 100%; box-sizing: border-box; min-height: 70px; background: va
       </section>
 
       <section>
+        <h2>Modelos 3D reais</h2>
+        <button id="btnGlb" class="wide">Importar modelo .glb</button>
+        <input id="glbInput" type="file" accept=".glb,model/gltf-binary" hidden>
+        <p class="note">Escaneie no iPhone com Scaniverse ou Polycam e exporte em GLB. O modelo entra em metros, como os outros objetos.</p>
+      </section>
+
+      <section>
+        <h2>Scan da sala (Quest)</h2>
+        <div class="row">
+          <button id="btnScanShow">Ocultar scan</button>
+          <button id="btnScanGet">Baixar .glb</button>
+          <button id="btnScanDel">Apagar</button>
+        </div>
+        <p class="note" id="scanNote">Nenhum scan salvo neste navegador. No Quest, ao sair da realidade mista, o scan da sala fica guardado aqui.</p>
+      </section>
+
+      <section>
         <h2>Projeto</h2>
         <div class="row">
           <button id="btnSample">Exemplo de loja</button>
@@ -152,6 +169,8 @@ textarea { width: 100%; box-sizing: border-box; min-height: 70px; background: va
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import * as CANNON from 'cannon-es';
 
 const $ = s => document.querySelector(s);
@@ -299,6 +318,38 @@ function makeShape(s) {
 const entities = [];
 let uid = 0;
 
+/* Arquivos grandes (modelos e scan) ficam no IndexedDB deste navegador. */
+const idb = (() => {
+  let dbp;
+  const open = () => dbp ||= new Promise((res, rej) => {
+    const r = indexedDB.open('loja-rm', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  const tx = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => { const t = db.transaction('files', mode); const req = fn(t.objectStore('files')); t.oncomplete = () => res(req?.result); t.onerror = () => rej(t.error); });
+  };
+  return { get: k => tx('readonly', s => s.get(k)).catch(() => null), put: (k, v) => tx('readwrite', s => s.put(v, k)).catch(() => null), del: k => tx('readwrite', s => s.delete(k)).catch(() => null) };
+})();
+const gltfLoader = new GLTFLoader();
+const models = new Map(); // id -> { name, scene }
+async function parseModel(id, buf, name) {
+  const g = await gltfLoader.parseAsync(buf, '');
+  g.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; o.userData.shared = true; } });
+  models.set(id, { name, scene: g.scene });
+  return models.get(id);
+}
+async function ensureModels(items = []) {
+  for (const it of items) {
+    const id = it.type === 'modelo' && it.state?.modelId;
+    if (!id || models.has(id)) continue;
+    const rec = await idb.get('model:' + id);
+    if (rec) await parseModel(id, rec.buf, rec.name).catch(() => {});
+  }
+}
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 class Entity {
   constructor(type, params = {}) {
     this.type = type; this.def = CATALOG[type]; this.id = ++uid;
@@ -308,6 +359,7 @@ class Entity {
     this.parts = []; this.constraints = []; this.state = {}; this.dragging = false;
     entities.push(this);
   }
+  get follow() { return this.def.follow || (this.type === 'modelo' && this.params.fisica > 0); }
   part(o) {
     const kind = o.kind || 'static';
     const body = new CANNON.Body({
@@ -321,10 +373,14 @@ class Entity {
       const { geo, cs, offset, quat } = makeShape(s);
       const m = new THREE.Mesh(geo, s.mat || mat(s.color ?? o.color ?? C.steel));
       m.position.copy(offset); m.quaternion.copy(quat);
-      m.castShadow = !s.noShadow; m.receiveShadow = true;
+      m.castShadow = !s.noShadow; m.receiveShadow = true; m.visible = !s.hidden;
       m.userData.ent = this; m.userData.part = p;
       group.add(m);
       if (!s.ghost) body.addShape(cs, cv(offset), new CANNON.Quaternion(quat.x, quat.y, quat.z, quat.w));
+    }
+    if (o.visual) {
+      o.visual.traverse(m => { if (m.isMesh) { m.userData.ent = this; m.userData.part = p; } });
+      group.add(o.visual);
     }
     body.userData = { ent: this, part: p };
     scene.add(group); world.addBody(body);
@@ -367,13 +423,14 @@ class Entity {
     for (const c of this.constraints) world.removeConstraint(c);
     for (const p of this.parts) {
       world.removeBody(p.body); scene.remove(p.group);
-      p.group.traverse(o => o.geometry?.dispose());
+      p.group.traverse(o => { if (!o.userData.shared) o.geometry?.dispose(); });
     }
     this.parts = []; this.constraints = [];
     this.state.tex?.dispose();
   }
   build() {
-    this.clearParts(); this.state = { on: this.state.on ?? true, open: this.state.open ?? false };
+    const { modelId, name, wasDyn } = this.state;
+    this.clearParts(); this.state = { on: this.state.on ?? true, open: this.state.open ?? false, modelId, name, wasDyn };
     this.def.build(this, this.params); this.applyAnchor();
   }
   destroy() {
@@ -646,6 +703,25 @@ const CATALOG = {
     interact(e) { e.state.on = !e.state.on; },
     status(e) { return `${e.state.on ? 'ligada' : 'parada'} · ${(e.parts[1].body.position.y - e.parts[1].homeP.y).toFixed(2)} m`; },
   },
+  modelo: {
+    label: 'Modelo 3D', floor: true,
+    params: { escala: P(1, 0.01, 100, 0.01, 'Escala ×'), fisica: P(0, 0, 1, 1, 'Física 0 fixo · 1 solto'), massa: P(20, 0.5, 2000, 0.5, 'Massa kg') },
+    build(e, { escala: k, fisica, massa }) {
+      const m = models.get(e.state.modelId);
+      if (!m) { e.part({ shapes: [{ box: [0.5, 0.5, 0.5], at: [0, 0.25, 0], color: C.red }] }); return; }
+      const vis = m.scene.clone(true);
+      vis.scale.setScalar(k); vis.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(vis), size = bb.getSize(V()), c = bb.getCenter(V());
+      const dyn = fisica > 0;
+      // fixo: origem no centro da base; solto: origem no centro (centro de massa)
+      vis.position.set(-c.x, dyn ? -c.y : -bb.min.y, -c.z);
+      const box = [size.x, size.y, size.z].map(v => Math.max(v, 0.01));
+      e.part({ kind: dyn ? 'dynamic' : 'static', mass: massa, shapes: [{ box, at: [0, dyn ? 0 : box[1] / 2, 0], hidden: true }], visual: vis });
+      if (e.state.wasDyn !== undefined && e.state.wasDyn !== dyn) e.anchor.position.y += dyn ? box[1] / 2 : -box[1] / 2;
+      e.state.wasDyn = dyn; e.state.size = box;
+    },
+    status(e) { return models.has(e.state.modelId) ? (e.state.size || []).map(v => v.toFixed(2)).join(' × ') + ' m' : 'arquivo não está neste navegador'; },
+  },
   caixa: {
     label: 'Caixa', group: 'Objetos soltos', follow: true, lift: p => p.lado / 2 + 0.01,
     params: { lado: P(0.35, 0.1, 1, 0.05, 'Lado m'), massa: P(4, 0.5, 60, 0.5, 'Massa kg') },
@@ -662,7 +738,7 @@ const CATALOG = {
 world.addEventListener('preStep', () => {
   const dt = world.dt;
   for (const e of entities) {
-    if (e.dragging && e.def.follow) e.applyAnchor();
+    if (e.dragging && e.follow) e.applyAnchor();
     e.def.update?.(e, dt);
   }
   const done = new Set();
@@ -691,7 +767,7 @@ function spawn(type, { p, q, params, state } = {}) {
   return e;
 }
 function serialize() {
-  return { v: 1, items: entities.map(e => ({ type: e.type, params: e.params, p: e.home.p.map(n => +n.toFixed(3)), q: e.home.q.map(n => +n.toFixed(4)), state: { on: e.state.on, open: e.state.open } })) };
+  return { v: 1, items: entities.map(e => ({ type: e.type, params: e.params, p: e.home.p.map(n => +n.toFixed(3)), q: e.home.q.map(n => +n.toFixed(4)), state: { on: e.state.on, open: e.state.open, modelId: e.state.modelId, name: e.state.name } })) };
 }
 let saveTimer;
 function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => store.set('loja-rm-layout', serialize()), 300); }
@@ -740,7 +816,7 @@ tc.addEventListener('objectChange', () => selected?.applyAnchor());
 function setMode(m) {
   tc.setMode(m);
   tc.showX = tc.showZ = m === 'translate';
-  tc.showY = m === 'rotate' || !selected?.def.floor || selected?.def.follow;
+  tc.showY = m === 'rotate' || !selected?.def.floor || selected?.follow;
 }
 function select(e) {
   selected = e;
@@ -757,7 +833,7 @@ function renderProps() {
   const fields = Object.entries(d.params || {}).map(([k, [, min, max, step, label]]) =>
     `<label class="f" for="pp-${k}">${label}<input id="pp-${k}" data-k="${k}" type="number" min="${min}" max="${max}" step="${step}" value="${e.params[k]}"></label>`).join('');
   propsEl.innerHTML = `
-    <h3>${d.label}${d.status ? `<span class="pill" id="propStatus"></span>` : ''}</h3>
+    <h3>${esc(e.state.name || d.label)}${d.status ? `<span class="pill" id="propStatus"></span>` : ''}</h3>
     ${fields ? `<div class="params">${fields}</div>` : ''}
     ${d.interact ? `<button class="primary wide" id="ppAct">Acionar (F)</button>` : ''}
     <div class="row"><button id="ppMove">Mover</button><button id="ppRot">Girar</button><button id="ppDup">Duplicar</button><button id="ppDel">Apagar</button></div>
@@ -766,7 +842,7 @@ function renderProps() {
     const [, min, max] = d.params[inp.dataset.k];
     const v = clamp(parseFloat(inp.value) || 0, min, max);
     inp.value = v; e.params[inp.dataset.k] = v;
-    e.goHome(); e.build(); save();
+    e.goHome(); e.build(); e.setHome(); save();
   }));
   $('#ppAct')?.addEventListener('click', () => act(e));
   $('#ppMove').onclick = () => setMode('translate');
@@ -787,7 +863,7 @@ function act(e) { if (e?.def.interact) { e.def.interact(e); save(); } }
 function remove(e) { if (!e) return; if (selected === e) select(null); e.destroy(); save(); }
 function duplicate(e) {
   const off = V(0.5, 0, 0.5);
-  const n = spawn(e.type, { p: e.anchor.position.clone().add(off).toArray(), q: e.anchor.quaternion.toArray(), params: { ...e.params } });
+  const n = spawn(e.type, { p: e.anchor.position.clone().add(off).toArray(), q: e.anchor.quaternion.toArray(), params: { ...e.params }, state: { modelId: e.state.modelId, name: e.state.name } });
   select(n); save();
 }
 
@@ -806,7 +882,7 @@ const paramsOf = type => Object.fromEntries(Object.entries(CATALOG[type].params 
 
 const catEl = $('#catalog');
 const groups = {};
-for (const [k, d] of Object.entries(CATALOG)) (groups[d.group] ||= []).push([k, d]);
+for (const [k, d] of Object.entries(CATALOG)) if (d.group) (groups[d.group] ||= []).push([k, d]);
 catEl.innerHTML = Object.entries(groups).map(([g, items]) =>
   `<h2>${g}</h2><div class="grid">${items.map(([k, d]) => `<button data-add="${k}">${d.label}${d.sub ? `<small>${d.sub}</small>` : ''}</button>`).join('')}</div>`).join('');
 catEl.addEventListener('click', ev => { const b = ev.target.closest('[data-add]'); if (b) addFromPanel(b.dataset.add); });
@@ -866,7 +942,8 @@ $('#btnCopy').onclick = () => {
 $('#btnImport').onclick = () => {
   const b = $('#importBox');
   if (b.hidden || !b.value.trim()) { b.hidden = false; b.value = ''; b.focus(); return; }
-  try { load(JSON.parse(b.value)); b.hidden = true; toast('Layout importado'); } catch { toast('Esse texto não é um layout válido'); }
+  let data; try { data = JSON.parse(b.value); } catch { toast('Esse texto não é um layout válido'); return; }
+  ensureModels(data.items).then(() => { load(data); b.hidden = true; toast('Layout importado'); });
 };
 $('#menuToggle').onclick = () => { const t = $('#tools'); t.classList.toggle('collapsed'); $('#menuToggle').setAttribute('aria-expanded', !t.classList.contains('collapsed')); };
 for (const [id, key] of [['roomW', 'w'], ['roomD', 'd'], ['roomH', 'h']]) {
@@ -953,12 +1030,13 @@ function clearScan() {
 /* Menu no pulso (canvas) */
 const MENU_W = 768, COLS = 3, CELL_H = 74, HEAD = 92;
 const menuItems = [
-  ...Object.entries(CATALOG).map(([k, d]) => ({ label: d.label, kind: 'add', act: () => spawnXR(k) })),
+  ...Object.entries(CATALOG).filter(([, d]) => d.group).map(([k, d]) => ({ label: d.label, kind: 'add', act: () => spawnXR(k) })),
   { label: () => paused ? 'Continuar física' : 'Pausar física', act: togglePause },
   { label: 'Acionar selecionado', act: () => act(selected) },
   { label: 'Apagar selecionado', act: () => remove(selected) },
   { label: 'Voltar posições', act: resetAll },
   { label: () => xr.showScan ? 'Ocultar scan' : 'Mostrar scan', act: toggleScan },
+  { label: 'Salvar scan da sala', act: () => toast(snapshotScan() ? 'Scan salvo. No navegador, use Baixar scan' : 'Nada escaneado ainda') },
   { label: 'Escanear sala', act: () => { if (xr.session?.initiateRoomCapture) xr.session.initiateRoomCapture(); else toast('Este navegador não oferece novo escaneamento'); } },
   { label: 'Sair', kind: 'exit', act: () => xr.session?.end() },
 ];
@@ -1057,7 +1135,7 @@ function onSelectStart(st) {
 function onSelectEnd(st) {
   const g = st.grab; if (!g) return;
   st.grab = null; g.ent.dragging = false;
-  if (g.ent.def.follow) { const b = g.ent.parts[0].body; b.velocity.set(g.vel.x, g.vel.y, g.vel.z); }
+  if (g.ent.follow) { const b = g.ent.parts[0].body; b.velocity.set(g.vel.x, g.vel.y, g.vel.z); }
   g.ent.setHome(); save();
 }
 function updateGrab(st, dt) {
@@ -1066,7 +1144,7 @@ function updateGrab(st, dt) {
   const sx = axes[2] || 0, sy = axes[3] || 0;
   if (Math.abs(sx) > 0.25) g.yaw -= sx * 2.2 * dt;
   const a = e.anchor;
-  if (e.def.follow) {
+  if (e.follow) {
     if (Math.abs(sy) > 0.25) g.dist = clamp(g.dist - sy * 1.6 * dt, 0.15, 8);
     a.position.copy(ray.origin).addScaledVector(ray.direction, g.dist).add(g.offset);
     if (Math.abs(sx) > 0.25) a.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(Y, -sx * 2.2 * dt));
@@ -1154,6 +1232,7 @@ async function startXR(mode) {
     if (mode === 'immersive-ar') {
       scene.background = null; renderer.setClearColor(0x000000, 0);
       roomGroup.visible = false; setRoomPhysics(false); shadowCatcher.visible = true;
+      if (roomScan) roomScan.visible = false;
     }
     drawMenu();
   } catch (err) {
@@ -1161,10 +1240,12 @@ async function startXR(mode) {
   }
 }
 function onXREnd() {
+  if (xr.mode === 'immersive-ar') snapshotScan();
   clearScan();
   for (const st of xr.ctrls) if (st.grab) onSelectEnd(st);
   xr.session = null; xr.mode = null;
   scene.background = BG; roomGroup.visible = true; setRoomPhysics(true); shadowCatcher.visible = false;
+  if (roomScan) roomScan.visible = showRoomScan;
   resize(); renderProps();
 }
 $('#btnAR').onclick = () => startXR('immersive-ar');
@@ -1194,7 +1275,7 @@ renderer.setAnimationLoop((t, frame) => {
   if (!paused) world.step(1 / 60, dt, 4);
   else for (const e of entities) if (e.dragging) e.applyAnchor();
   for (const e of entities) {
-    if (e.def.follow && !e.dragging) e.followBody();
+    if (e.follow && !e.dragging) e.followBody();
     e.sync();
     e.def.frame?.(e, dt);
   }
@@ -1208,11 +1289,75 @@ renderer.setAnimationLoop((t, frame) => {
 });
 
 if (innerWidth < 760) { $('#tools').classList.add('collapsed'); $('#menuToggle').setAttribute('aria-expanded', 'false'); }
+/* ---------- Modelos importados e scan da sala ---------- */
+$('#btnGlb').onclick = () => $('#glbInput').click();
+$('#glbInput').addEventListener('change', async ev => {
+  const f = ev.target.files[0]; ev.target.value = '';
+  if (!f) return;
+  if (!/\.glb$/i.test(f.name)) { toast('Use um arquivo .glb (no app de scan, exporte como GLB)'); return; }
+  toast(`Carregando ${f.name}…`);
+  try {
+    const buf = await f.arrayBuffer();
+    const id = 'm' + Date.now().toString(36);
+    await parseModel(id, buf, f.name);
+    await idb.put('model:' + id, { buf, name: f.name });
+    const t = orbit.target;
+    const e = spawn('modelo', { p: [t.x, 0, t.z], state: { modelId: id, name: f.name.replace(/\.glb$/i, '') } });
+    select(e); save();
+    const big = Math.max(...e.state.size);
+    toast(big > 30 ? `Modelo com ${big.toFixed(0)} m: ajuste a escala` : 'Modelo importado');
+  } catch (err) { toast('Não consegui ler esse arquivo: ' + (err.message || err)); }
+});
+
+let roomScan = null, showRoomScan = true;
+function setRoomScan(g) {
+  if (roomScan) { scene.remove(roomScan); roomScan.traverse(o => { o.geometry?.dispose(); o.material?.dispose?.(); }); }
+  roomScan = g;
+  if (g) { g.visible = showRoomScan && !(xr.mode === 'immersive-ar'); scene.add(g); }
+  $('#scanNote').textContent = g ? `Scan salvo com ${g.children.length} superfícies. Baixe o .glb para abrir em outro aparelho ou importar como modelo.` : 'Nenhum scan salvo neste navegador. No Quest, ao sair da realidade mista, o scan da sala fica guardado aqui.';
+  $('#btnScanShow').textContent = showRoomScan ? 'Ocultar scan' : 'Mostrar scan';
+}
+function snapshotScan() {
+  const recs = [...xr.planes.values(), ...xr.meshes.values()];
+  if (!recs.length) return false;
+  const g = new THREE.Group(); g.name = 'scan-da-sala';
+  for (const r of recs) {
+    r.mesh.updateMatrixWorld();
+    const geo = r.mesh.geometry.clone().applyMatrix4(r.mesh.matrixWorld);
+    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: r.mesh.material.color, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }));
+    m.name = r.mesh.userData.surface; g.add(m);
+  }
+  setRoomScan(g);
+  exportGlb(g).then(buf => idb.put('scan', buf)).catch(() => {});
+  return true;
+}
+function exportGlb(obj) { return new Promise((res, rej) => new GLTFExporter().parse(obj, res, rej, { binary: true })); }
+async function loadSavedScan() {
+  const buf = await idb.get('scan');
+  if (!buf) return;
+  try { const g = await gltfLoader.parseAsync(buf, ''); setRoomScan(g.scene); } catch {}
+}
+$('#btnScanShow').onclick = () => { showRoomScan = !showRoomScan; if (roomScan) roomScan.visible = showRoomScan; setRoomScan(roomScan); };
+$('#btnScanDel').onclick = () => { setRoomScan(null); idb.del('scan'); toast('Scan apagado'); };
+$('#btnScanGet').onclick = async () => {
+  if (!roomScan) { toast('Nenhum scan salvo ainda'); return; }
+  const buf = await exportGlb(roomScan);
+  const url = URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' }));
+  const a = document.createElement('a'); a.href = url; a.download = 'scan-da-sala.glb';
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+};
+
 buildRoom();
-const saved = store.get('loja-rm-layout');
-load(saved && saved.items?.length ? saved : sampleLayout());
+(async () => {
+  const saved = store.get('loja-rm-layout');
+  const data = saved && saved.items?.length ? saved : sampleLayout();
+  await ensureModels(data.items).catch(() => {});
+  load(data);
+  loadSavedScan();
+})();
 document.fonts?.ready.then(drawMenu);
-window.__loja = { entities, world, CATALOG, select, act, spawn };
+window.__loja = { entities, world, CATALOG, select, act, spawn, xr, snapshotScan, makePlaneRecord };
 </script>
 
 </body>
